@@ -38,6 +38,22 @@ final class PetPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Makes the whole surface a drag handle.
+///
+/// `isMovableByWindowBackground` is the usual one-liner, but it only works where
+/// the view under the pointer agrees to pass the click on, and the status rows
+/// are `NSTextField`s, which do not. A transparent layer over everything is
+/// predictable instead of heuristic: every point of the pet drags, and there is
+/// nothing underneath that wants clicks anyway.
+///
+/// `performDrag` also keeps the focus guarantee intact — it moves the window
+/// without activating the app.
+final class DragOverlayView: NSView {
+    override func mouseDown(with event: NSEvent) {
+        window?.performDrag(with: event)
+    }
+}
+
 extension String {
     /// Raise the first letter only, leaving the rest as the agent wrote it.
     ///

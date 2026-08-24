@@ -37,6 +37,7 @@ swiftc -O \
   -target arm64-apple-macos13.0 \
   -import-objc-header "$ROOT/macos/bridge/agentpet.h" \
   "$ROOT"/macos/Sources/AgentPet/*.swift \
+  "$ROOT"/macos/Sources/PetGeometry/*.swift \
   -L "$ROOT/core/target/release" -lagentpet_core \
   -o "$APP/Contents/MacOS/AgentPet"
 
