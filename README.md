@@ -1,0 +1,92 @@
+# agent-agnostic-pet
+
+A small always-visible surface that shows what every AI coding-agent session on this
+machine is doing right now, so you can stay in another window instead of tabbing back
+to the terminal.
+
+Release 001 covers Claude Code CLI sessions on macOS.
+
+## What it shows
+
+One row per live session: the project, what that session is currently doing, and how
+many seconds ago that was observed.
+
+```
+agent-agnostic-pet                    1s
+Reading backlog.md
+
+claude-code-experimental (773d)       1s
+idle
+```
+
+Two sessions in the same project get a short suffix, because the name a session derives
+for itself is not unique.
+
+Three situations replace the list rather than showing rows:
+
+| | |
+|---|---|
+| `state unknown` | that session's working state could not be read — never guessed as idle or working |
+| `sessions unreadable` | discovery itself failed; the reason is written to the log |
+| `no agents running` | discovery worked and nothing is running |
+
+## Build and run
+
+Needs Rust and the Xcode Command Line Tools. No Xcode, no package manager.
+
+```sh
+./build.sh
+open build/AgentPet.app
+```
+
+The pet has no dock icon and no menu bar. Quit it with `pkill AgentPet`.
+
+## Configuration
+
+Optional. With no config file the pet watches `~/.claude` and `~/.codex`, and also finds
+the profile directory of every running `claude` process — so a session started under a
+custom `CLAUDE_CONFIG_DIR` shows up on its own, with no setup.
+
+To watch somewhere else as well, create `~/.config/agent-pet/config.json`:
+
+```json
+{ "watchDirectories": ["~/work/.claude"] }
+```
+
+Directories that do not exist are skipped. Directories holding sessions this release
+cannot yet read — Codex — are ignored silently.
+
+## How it works
+
+The pet reads two files each agent already writes, and writes nothing of its own:
+
+- `<profile>/sessions/<pid>.json` — which sessions exist, their project, and whether
+  they are busy or idle.
+- `<profile>/projects/<slug>/<sessionId>.jsonl` — read forward from where it last
+  stopped, for the activity line.
+
+A session counts as live only when its registry file exists, the process it names is
+running, **and** that process's start time matches the one recorded in the file. The
+third test is what stops a force-killed session or a recycled PID from leaving a row
+behind.
+
+Nothing is hooked, injected, or configured in any agent, no agent-owned file is ever
+written, and nothing observed leaves the machine.
+
+Design notes: [docs/design-docs/001-observation-channel-and-pet-surface.md](docs/design-docs/001-observation-channel-and-pet-surface.md)
+
+## Layout
+
+```
+core/    Rust observation core — discovery, liveness, activity text
+macos/   Swift + AppKit surface, a non-activating NSPanel
+```
+
+The core hands the surface a plain list of live sessions across a single JSON call.
+Adding an agent means adding an adapter in `core/`; the surface does not change.
+
+## Tests
+
+```sh
+cargo test --manifest-path core/Cargo.toml
+```

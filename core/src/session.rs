@@ -1,0 +1,96 @@
+use serde::Serialize;
+
+/// Whether an agent session is currently doing work.
+///
+/// `Unknown` is a real, reportable state — never a placeholder to be resolved
+/// into `Working` or `Idle` by inference. If an adapter cannot read a session's
+/// working state, it says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    Working,
+    Idle,
+    Unknown,
+}
+
+/// One live agent session, already reduced to what the pet draws.
+///
+/// The pet never sees a PID, a registry file or a transcript — adapters keep all
+/// of that inside themselves, so adding an agent changes no pet code.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSession {
+    /// Which agent produced this session, e.g. `claude`.
+    pub agent_id: String,
+    /// Stable identity for this session, unique across all agents.
+    pub session_key: String,
+    /// Absolute working directory the session was launched in.
+    pub project_path: String,
+    /// What to show as the project, disambiguated if another row collides.
+    pub display_name: String,
+    pub state: State,
+    /// Very short description of current activity. Present only while `Working`.
+    pub activity: Option<String>,
+    /// When this observation was taken, unix ms. The pet counts up from here.
+    pub observed_at: u64,
+}
+
+/// Make every displayed name unique.
+///
+/// Two sessions in the same project legitimately derive the same name — observed
+/// on this machine, where two sessions both derived `agent-agnostic-pet-02`. The
+/// displayed name is not an identifier, so where names collide each colliding row
+/// gains a short suffix taken from its session key.
+pub fn disambiguate(sessions: &mut [AgentSession]) {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in sessions.iter() {
+        *counts.entry(s.display_name.clone()).or_insert(0) += 1;
+    }
+    for s in sessions.iter_mut() {
+        if counts.get(&s.display_name).copied().unwrap_or(0) > 1 {
+            let suffix: String = s.session_key.chars().take(4).collect();
+            s.display_name = format!("{} ({})", s.display_name, suffix);
+        }
+    }
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn s(name: &str, key: &str) -> AgentSession {
+        AgentSession {
+            agent_id: "claude".into(),
+            session_key: key.into(),
+            project_path: "/tmp/p".into(),
+            display_name: name.into(),
+            state: State::Idle,
+            activity: None,
+            observed_at: 0,
+        }
+    }
+
+    #[test]
+    fn colliding_names_each_gain_a_suffix() {
+        let mut v = vec![s("pet-02", "32dd885c"), s("pet-02", "27bb0263")];
+        disambiguate(&mut v);
+        assert_eq!(v[0].display_name, "pet-02 (32dd)");
+        assert_eq!(v[1].display_name, "pet-02 (27bb)");
+        assert_ne!(v[0].display_name, v[1].display_name);
+    }
+
+    #[test]
+    fn unique_names_are_left_alone() {
+        let mut v = vec![s("alpha", "aaaa1111"), s("beta", "bbbb2222")];
+        disambiguate(&mut v);
+        assert_eq!(v[0].display_name, "alpha");
+        assert_eq!(v[1].display_name, "beta");
+    }
+}

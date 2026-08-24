@@ -4,7 +4,7 @@
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md))
 
 ## Status
-Draft
+Done
 
 ## User Outcome
 As the developer, I want every currently running Claude Code CLI session to appear on a small always-visible
@@ -38,8 +38,12 @@ are up to without switching to the terminal.
 - Given discovery itself fails, then the pet shows an error state, distinct from the empty state shown
   when no agents are running.
 - Given no sessions are running, then the pet shows an empty state rather than disappearing or erroring.
-- Given the pet is running, then it never takes keyboard focus and never blocks interaction with the
-  window beneath it.
+- Given the pet is running, then it never takes keyboard focus — including when it is clicked.
+- Given the pet is clicked, then the click does not reach the window beneath it.
+  (Amended mid-build. This criterion originally required the opposite, that clicks pass through. Real
+  use showed that made the pet an invisible trap over controls the user cannot see: a click landed on
+  a window's close button and ended a live session. Passing clicks through is also incompatible with
+  moving the pet, which cannot be dragged if it ignores the mouse.)
 - Given the pet is running, then no agent activity, prompt, or code leaves the machine.
 - Given the pet is running, then it creates and modifies no file owned by Claude Code or any other
   agent; all observation is read-only.
@@ -72,6 +76,8 @@ are up to without switching to the terminal.
   `status`, writes no transcript, and does not appear in peer enumeration — a live process that is not
   an observable session.
 - A session that has just started has no tool activity yet; its row must render without an activity line.
+- A click-through surface sits over controls the user cannot see; forwarding the click can trigger a
+  destructive action such as closing a window.
 - Status fidelity varies by entrypoint: `cli` sessions publish `status` with a live `statusUpdatedAt`;
   others may publish neither.
 
@@ -91,11 +97,37 @@ are up to without switching to the terminal.
 - Manual: let a session go idle and confirm the row flips to `idle`.
 - Manual: quit one session; its row disappears within a few seconds.
 - Manual: `kill -9` a session; no stale row survives.
-- Manual: click through the pet and confirm the click reaches the window beneath and focus never moves.
+- Manual: click the pet and confirm the click does not reach the window beneath, and that focus stays
+  wherever it was.
+
+Verified so far:
+- Automated: 40 tests in `core/` cover the three-part liveness rule (orphan, recycled PID, healthy),
+  activity derivation including the fallback and a transcript with no tool activity, and discovery
+  across two directories with one absent. Run with
+  `cargo test --manifest-path core/Cargo.toml`.
+- Real sessions: three live CLI sessions across two profile directories rendered with correct project
+  attribution, and the activity line matched the agent's actual current command.
+- Real `kill -9`: the row disappeared within ~5 s with the registry file still on disk; separately, the
+  liveness rule was exercised against the real process table for the healthy, mismatched-`procStart`
+  and killed cases.
+- Idle: two real sessions rendered as `idle`.
+- Error state: a malformed config produced `sessions unreadable`, distinct from the empty state, and
+  the pet recovered when the file was removed.
+- Read-only and local: no sockets held, no writable file descriptors, no write/create/remove calls
+  outside tests.
+
+- Empty state: confirmed by the developer with every session stopped — the pet showed
+  `No agents running`.
+- Count-up timer: two captures six seconds apart read `5s` then `11s` on an unchanged status, with no
+  reset. Previously it restarted every discovery tick; four tests now pin the behaviour, including that
+  a changed state or a changed activity line does restart the count.
+
+- Clicking the pet: confirmed by the developer after the click behaviour was reversed — the click stops
+  at the pet and does not reach the window beneath.
 
 ## Design Requirement
 - Technical design required — platform choice and the agent-adapter seam are cross-cutting and
-  expensive to reverse. Link: docs/design-docs/001-observation-channel-and-pet-surface.md (pending)
+  expensive to reverse. Link: [docs/design-docs/001-observation-channel-and-pet-surface.md](../design-docs/001-observation-channel-and-pet-surface.md) — Accepted.
 - Hard constraint: the pet observes agents without modifying any agent-owned configuration or file.
 - Observation channel (settled by investigation): per-profile registry file `<profile>/sessions/<pid>.json`
   for discovery, project, liveness and `status: busy|idle`; per-session transcript
@@ -106,4 +138,8 @@ are up to without switching to the terminal.
   found to publish status); terminal/PTY capture (no single tap point across VS Code's integrated
   terminal and plain shells, and fragile TUI parsing); macOS Accessibility API (permission-gated,
   breaks when windows are hidden); process-tree inspection (misses in-process tools, no idle signal).
-- Left to the design doc: how profile directories are enumerated and defaulted, and the pet's platform.
+- Settled by the design doc: portable Rust observation core behind a one-function JSON FFI, with a
+  Swift + AppKit `NSPanel` frontend on macOS; adapters own liveness so the pet needs no change when an
+  agent is added; profile directories are re-derived every tick from defaults, config, and the
+  `CLAUDE_CONFIG_DIR` of every live `claude` process; config at `~/.config/agent-pet/config.json`;
+  polling (not filesystem watching) because a force-killed process changes no file on disk.
