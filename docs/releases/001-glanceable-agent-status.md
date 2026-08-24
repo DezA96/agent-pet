@@ -16,9 +16,12 @@ The developer (solo), the charter's sole target user, on macOS. No other audienc
 - **C-002 Claude Code CLI integration** — live session state read from what Claude Code already exposes locally.
 - **C-003 Codex CLI integration** — the same outcome through a mechanically different agent; this is what proves the seam.
 - **C-004 Short activity status line** — a very short description of what each session is currently working on.
-- **C-005 Attention states visually distinct** — waiting-for-input and errored are tellable from working at a glance, without reading text.
-- **C-006 One pet, one status row per live session** — a single pet anchors the surface; each live session gets its own row (agent, project, current activity), so concurrent sessions each carry their own clear signal and are distinguishable from one another.
+- **C-005 The pet and its attention states** — a single pet anchors the surface, and its appearance makes waiting-for-input and errored tellable from working at a glance, without reading text. (Rescoped — see Explicit Scope Changes.)
+- **C-006 One status row per live session** — each live session gets its own row (agent, project, current activity), so concurrent sessions each carry their own clear signal and are distinguishable from one another. (Rescoped — the pet itself moved to C-005; see Explicit Scope Changes.)
 - **C-012 Live-session discovery** — only sessions actually running are shown; ended and stale sessions disappear.
+- **C-014 Add-directory picker** — the watched-directory list is editable from the pet, not only by hand-editing config. (Added mid-release — see Explicit Scope Changes.)
+- **C-016 Placeable and controllable pet window** — drag to move, position remembered, menu bar icon for show/hide and quit. (Added mid-release — see Explicit Scope Changes.)
+- **C-017 Status age counts from the real status change** — the age beside a session is time since the status actually changed, not since the pet first looked. (Added mid-release — see Explicit Scope Changes.)
 
 ## Release Acceptance Criteria
 - With no terminal visible — whatever window is focused, or none at all — every currently running Claude Code and Codex session is represented on screen.
@@ -75,3 +78,20 @@ Single-user local release: the developer runs it on their own machine, no rollou
   while Codex needed transcript tailing. Claude Code's session registry file and transcript are both
   readable on disk in real time, so both agents are read the same way and the adapter seam no longer
   has to absorb an asymmetry.
+- **Pet avatar moved from C-006 into C-005** (implement round, after story 001). Story 001 built C-006's
+  per-session rows but not its other half — "a single pet anchors the surface" — leaving the charter's
+  central noun unbuilt: the surface is a list of text with no pet on it. Not a release expansion; the
+  avatar was always planned scope. Reallocated because the pet's entire job in the charter is to convey
+  state, so building the creature in one story and the states it expresses in another splits one feature
+  down the middle. C-006 is now rows only and is satisfied by story 001; C-005 delivers the pet and its
+  attention states together.
+- **Added C-017 status age counts from the real status change** (spec round, story 002). Conscious
+  expansion. Claude Code writes `statusUpdatedAt` — a unix-ms timestamp of when a session's status last
+  actually changed — on every registry file, and `RegistryEntry` never parses it; the adapter stamps
+  `observed_at = now_ms()` instead. The age therefore measures when the *pet* looked, not when the
+  status began. Observed live while specifying story 002: a session idle for 96 minutes would display
+  as `0s` after a relaunch. Not a defect against story 001, whose criterion says "since that status was
+  observed" and is met — the criterion turned out weaker than the data already on disk. Expanded rather
+  than backlogged because a glanceable surface stating a false age is worse than stating none, and the
+  release goal is a glance that can be trusted. Kept as its own story rather than folded into 002:
+  it is an observation-core change with nothing to do with window placement.
