@@ -9,10 +9,12 @@ import QuartzCore
 /// each would make them the same dot. Story 001's rule is that an unreadable
 /// state is never conflated with idle, so the ring is what keeps that true.
 ///
-/// **Only the attention states breathe.** Working, idle and unknown hold still,
-/// so movement anywhere on the surface means something is asking for the user
-/// rather than merely reporting — which is what makes the pet readable from the
-/// corner of an eye while another window is focused.
+/// **A session breathes while it is alive to something; the settled states hold
+/// still.** Working breathes slowly and shallowly — the agent is busy and wants
+/// nothing from anyone. Waiting and errored breathe faster and deeper, so the two
+/// states that need the user still separate from the one that does not, by motion
+/// as well as by colour. Idle and unknown do not move at all: an idle session
+/// finished cleanly and an unreadable one is not reporting anything to animate.
 ///
 /// The breath is a Core Animation opacity pulse rather than a redraw on a timer.
 /// It runs in the render server, so it costs no per-frame CPU in this process, it
@@ -85,24 +87,44 @@ final class StateIndicatorView: NSView {
         }
         CATransaction.commit()
 
-        setBreathing(state.wantsAttention)
+        setBreathing(breath(for: state))
     }
 
-    private func setBreathing(_ on: Bool) {
-        guard on else {
+    /// How hard this state breathes, or `nil` for the states that hold still.
+    ///
+    /// The urgent pair is both faster and deeper than working, which is what keeps
+    /// motion a real signal now that shape no longer distinguishes anything: a
+    /// glance can tell a busy agent from one that is stuck without resolving the
+    /// colour at all.
+    private func breath(for state: SessionState) -> (period: Double, floor: Float)? {
+        switch state {
+        case .working: return (2.4, 0.55)
+        case .waiting, .errored: return (1.1, 0.28)
+        case .idle, .unknown: return nil
+        }
+    }
+
+    private func setBreathing(_ breath: (period: Double, floor: Float)?) {
+        guard let breath else {
             dot.removeAnimation(forKey: Self.breathKey)
             dot.opacity = 1
             return
         }
-        guard dot.animation(forKey: Self.breathKey) == nil else { return }
-        let breath = CABasicAnimation(keyPath: "opacity")
-        breath.fromValue = 1.0
-        breath.toValue = 0.28
-        breath.duration = 1.1
-        breath.autoreverses = true
-        breath.repeatCount = .infinity
-        breath.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        dot.add(breath, forKey: Self.breathKey)
+        // Restarting an identical breath every redraw would make the dot stutter,
+        // so an unchanged rhythm is left running.
+        if let running = dot.animation(forKey: Self.breathKey) as? CABasicAnimation,
+           running.duration == breath.period,
+           running.toValue as? Float == breath.floor {
+            return
+        }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = Float(1)
+        pulse.toValue = breath.floor
+        pulse.duration = breath.period
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        dot.add(pulse, forKey: Self.breathKey)
     }
 
     /// With shape no longer distinguishing the states, colour is doing the whole

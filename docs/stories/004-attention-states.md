@@ -36,8 +36,10 @@ so that a glance answers "does anything need me?" without my reading a single ro
   the **first** line, not centred against the whole block.
 - Given the surface is drawn over a light foreground window and over a dark one, then every dot stays
   visible on both.
-- Given a session is waiting or errored, then its dot breathes; given it is working, idle or unknown,
-  then its dot is still. Movement on the surface always means something wants the user.
+- Given a session is working, then its dot breathes slowly and shallowly; given it is waiting or
+  errored, then its dot breathes faster and deeper. Given it is idle or unknown, then its dot is still.
+  The two states that want the user stay separable from working by motion as well as by colour.
+  (Amended after first use; see Amended During Build.)
 - Given a dot breathes, then it does so through Core Animation rather than a redraw on a timer, so the
   surface's per-second work is unchanged from story 001.
 - Given a Codex session, then its state remains `Working | Idle | Unknown` — unchanged by this story,
@@ -108,8 +110,9 @@ Verified against the running app 2026-08-25, build `86306`:
   real live PID and its real `procStart` — the liveness rule was satisfied, not bypassed. Staging was
   reverted: fixture processes killed, fixture directory deleted, and `~/.config/agent-pet/config.json`
   removed (it had not existed beforehand).
-- **Only the attention states move.** Two captures one second apart show the red and orange dots
-  between dim and full while the green and grey dots are unchanged.
+- **Motion separates the states.** Captures 0.55 s apart show the green dot moving between full and a
+  shallow floor on a slow cycle, and the red and orange dots swinging further and faster, while the
+  grey idle dot is unchanged across every frame.
 - **Legible over light and dark.** Captured over a dark editor and over a white full-window image; all
   indicators stay readable on both.
 - **Footprint — measurable change not detectable by this method, which is weaker than proving there is
@@ -189,4 +192,10 @@ disk:
 - **Dot alignment fixed** (defect found in use). The row's header stack aligned on `.centerY`, so a
   project name wrapping to two lines left the dot floating between them, level with neither. It aligns
   on `.firstBaseline` now, with `StateIndicatorView` overriding `firstBaselineOffsetFromTop`.
+- **Working breathes too** (developer's call, same round). Originally only the two attention states
+  moved, so that any movement meant the user was needed. Working now breathes as well — but slowly
+  (2.4 s) and shallowly (down to 0.55 opacity), against the urgent pair's faster and deeper 1.1 s to
+  0.28. Differentiated rather than uniform deliberately: with shape gone, an identical breath on all
+  three would have left colour as the only difference between a busy agent and a stuck one, and this
+  keeps motion carrying information. Idle and unknown still hold perfectly still.
 

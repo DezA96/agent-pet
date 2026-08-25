@@ -46,11 +46,14 @@ need me?" without reading a word:
 Unknown is the one that is not a filled dot. Idle and unknown are both grey, and an
 unreadable state must never be mistaken for a session that finished cleanly.
 
-**Only the two states that want something from you move.** Waiting and errored breathe —
-a slow opacity pulse driven by Core Animation, so it costs the app no per-frame work —
-while everything else is still. Any movement on the surface means you are needed. Waiting
-is deliberately not idle: an idle session finished cleanly, a waiting one is blocked
-mid-turn and stays that way until you answer.
+**A live session breathes; a settled one holds still.** Working breathes slowly and
+shallowly — busy, wanting nothing from you. Waiting and errored breathe faster and deeper,
+so the states that need you separate from the one that does not by motion as well as by
+colour. Idle and unknown do not move at all. It is a Core Animation opacity pulse, running
+in the render server, so it costs the app no per-frame work.
+
+Waiting is deliberately not idle: an idle session finished cleanly, a waiting one is
+blocked mid-turn and stays that way until you answer.
 
 Attention states are Claude Code only. Codex publishes nothing about them — see below.
 
