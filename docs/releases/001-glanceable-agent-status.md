@@ -16,7 +16,8 @@ The developer (solo), the charter's sole target user, on macOS. No other audienc
 - **C-002 Claude Code CLI integration** — live session state read from what Claude Code already exposes locally.
 - **C-003 Codex CLI integration** — the same outcome through a mechanically different agent; this is what proves the seam.
 - **C-004 Short activity status line** — a very short description of what each session is currently working on.
-- **C-005 The pet and its attention states** — a single pet anchors the surface, and its appearance makes waiting-for-input and errored tellable from working at a glance, without reading text. (Rescoped — see Explicit Scope Changes.)
+- **C-005 Attention states** — waiting-for-input and errored are tellable from working at a glance, without reading the status text. (Rescoped twice — see Explicit Scope Changes.)
+- **C-020 The pet itself** — a drawn creature below the rows, offset by its position on the display, with the status rows as a speech bubble that switches sides at the screen border. (Split from C-005 — see Explicit Scope Changes.)
 - **C-006 One status row per live session** — each live session gets its own row (agent, project, current activity), so concurrent sessions each carry their own clear signal and are distinguishable from one another. (Rescoped — the pet itself moved to C-005; see Explicit Scope Changes.)
 - **C-012 Live-session discovery** — only sessions actually running are shown; ended and stale sessions disappear.
 - **C-014 Add-directory picker** — the watched-directory list is editable from the pet, not only by hand-editing config. (Added mid-release — see Explicit Scope Changes.)
@@ -132,4 +133,15 @@ Single-user local release: the developer runs it on their own machine, no rollou
   Claude and not for Codex; the criterion is left as written rather than weakened, so the gap stays
   visible at release close. Consequence accepted deliberately: Claude Code is where the developer's day
   is spent, and a blocked Codex session still shows as `Working`, which is incomplete but not false.
+- **C-005 split into C-005 and C-020** (spec round, story 004). Not a scope change to the release —
+  the same work ships, in two stories instead of one. The pet's visual form settled during this round
+  as a drawn creature sitting below the rows, offset left or right by where it sits on the display,
+  with the rows drawn as a speech bubble that switches sides at the screen border. That is a
+  substantially larger piece than the attention states it was bundled with, and it reshapes the window
+  frame that story 002's remembered-position and 40x40 validity rules operate on. Split at refinement,
+  where splitting belongs, on three grounds: C-005 alone satisfies the release's attention-state
+  criterion, because that criterion is per-row and the row indicator delivers it; nothing C-005 builds
+  is thrown away by C-020, since the row indicator lives inside the bubble unchanged; and the release
+  keeps moving while the visual work takes the time it needs. C-013's aggregate expression travels with
+  the creature into C-020.
 

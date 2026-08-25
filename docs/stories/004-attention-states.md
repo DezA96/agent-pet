@@ -1,18 +1,16 @@
-# Story: The pet and its attention states
+# Story: Attention states
 
 ## Release
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md))
 
 ## Status
-Draft
+In Progress
 
 ## User Outcome
-As the developer, I want a pet on the surface whose appearance tells me when an agent is waiting on me or has
-died, so that a glance answers "does anything need me?" without my reading a single row of text.
+As the developer, I want a session that is blocked on me or has died to look different from one that is working,
+so that a glance answers "does anything need me?" without my reading a single row of text.
 
 ## Acceptance Criteria
-_Settled in the spec round; visual vocabulary still open (round 2)._
-
 - Given a Claude session's registry file reports `status: "waiting"`, when its row is shown, then its
   state is waiting — not `unknown`, which is what it renders as today.
 - Given a waiting session's registry file carries a `waitingFor` reason, then that reason is shown as
@@ -29,17 +27,28 @@ _Settled in the spec round; visual vocabulary still open (round 2)._
   interpreted — observed live, a `429` was a hard session limit, not a rate limit to wait out.
 - Given a `tool_result` carrying `is_error`, then the state is not errored — these are failures the
   agent recovers from on its own; all 16 in this project's transcripts are auto-mode classifier denials.
-- Given the pet is running, then a drawn creature is present on the surface, and its appearance reflects
-  the most urgent state across all live sessions (errored > waiting > working > idle).
-- Given no session is live, then the creature is still present.
-- Given a session is waiting and another has errored, then the creature reflects the errored one.
+- Given any session row is shown, then it carries a state indicator whose **shape** differs per state,
+  so the state is readable without reading the status text and without relying on colour.
+- Given the surface is drawn over a light foreground window and over a dark one, then every indicator
+  stays legible on both — no state is carried by a colour that disappears against either.
+- Given a session is waiting or errored, then its indicator animates; given it is working, idle or
+  unknown, then its indicator is still. Movement on the surface always means something wants the user.
+- Given the indicator animates, then it does so on the existing 1 Hz display timer — no second timer,
+  and no measurable change in CPU over the footprint story 001 recorded (0.32 s over 90 s).
+- Given a Codex session, then its state remains `Working | Idle | Unknown` — unchanged by this story,
+  for the reason the spike settled.
+- Given the automated tests are run with `./test.sh`, then they pass.
 
 ## Excluded From This Change
 - **Codex attention states.** Resolved by spike, not assumed — see Design Requirement. Codex's rollout
   records nothing while a session waits on the user, so waiting and errored are unobservable through
   the only channel the pet has. Codex keeps `Working | Idle | Unknown`, as story 003 shipped. Recorded
   as an explicit scope change in the release plan.
-- **A sprite-sheet or raster-animated creature** (C-019, Candidate). This story draws the pet as vector
+- **The pet itself** (C-020, Planned for this release) — the drawn creature, its placement below and
+  offset by display position, the speech-bubble rows, the side-flip at the screen border, and C-013's
+  aggregate expression. Split from this story at refinement; this story's row indicator lives inside
+  that bubble unchanged.
+- **A sprite-sheet or raster-animated creature** (C-019, Candidate). C-020 draws the pet as vector
   paths; an asset pipeline is not something the current hand-rolled `build.sh` should grow for it.
 - **Per-agent icon or colour on a row** (C-018, Candidate) — unchanged by this story.
 - **Sound or any attention cue outside the surface** (C-007, Candidate).
@@ -62,7 +71,20 @@ _Settled in the spec round; visual vocabulary still open (round 2)._
 - No change to any file the pet writes, and no change to the config file.
 
 ## Testing Notes
-_Settled after round 2._
+- Automated (Rust, `./test.sh`): `status: "waiting"` maps to `Waiting` and not `Unknown`; `waitingFor`
+  reaches the session payload; `status: "shell"` maps to `Working`; an unrecognised status is still
+  `Unknown`.
+- Automated (Rust): the error rule in both directions — an `isApiErrorMessage` that is newest with a
+  non-`busy` status is errored; the same entry followed by later entries, or with a `busy` status, is
+  not; a `tool_result` with `is_error` never is.
+- Automated (Rust): `Error: <apiErrorStatus>` where the code is present, bare `Errored` where it is not.
+- Automated (Rust): the existing suites still pass unchanged — the new states must not disturb Codex's
+  mapping or the liveness rules.
+- Manual, against the real agent: a live Claude session driven to a permission prompt shows `waiting`
+  in its registry file on disk **and** a waiting row on the pet. This is the one criterion resting on a
+  value read from the CLI bundle rather than observed, so it is not called met until seen live.
+- Manual: the surface over a light and a dark foreground window, confirming every indicator stays
+  legible on both.
 
 ## Design Requirement
 - No separate design needed. The observation channels are the ones the pet already reads — the Claude
