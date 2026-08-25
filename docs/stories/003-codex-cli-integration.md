@@ -4,7 +4,7 @@
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md))
 
 ## Status
-Implemented
+Done
 
 ## User Outcome
 As the developer, using more than one coding agent, I want every currently running Codex CLI session to
