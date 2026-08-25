@@ -90,6 +90,17 @@ criterion "adding Codex required no change to the pet itself" would fail on the 
 Pull, not push: the pet owns the clock and asks; adapters never announce. Cadence and therefore battery
 behaviour stay controlled in one place.
 
+**Amended (spec round, story 003).** Two things the seam learned from the second adapter:
+
+- **`ProcessTable` carries generic primitives, not agent-named ones.** Codex liveness needs the open
+  file handles of a running process (`lsof`), where Claude's needs process start times (`ps`). Both are
+  phrased as neutral questions — which PIDs bear a command name, which paths a PID holds open — so no
+  agent name enters the trait. `claude_profile_dirs` predates this and is the counter-example: agent
+  knowledge leaking out of an agent's own module is exactly what this seam exists to prevent.
+- **The row renders `agentId` as text, generically.** The pet holds no table of agent names, no
+  per-agent icon and no per-agent branch. An agent wanting a richer token must supply it through the
+  session payload rather than have the pet learn about it (C-018).
+
 ### Profile directory enumeration — SETTLED (location of the config file still open)
 There is no separate startup path. Every discovery tick rebuilds the candidate directory list from
 scratch:
