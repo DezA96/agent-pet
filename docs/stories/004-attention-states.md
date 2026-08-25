@@ -27,14 +27,19 @@ so that a glance answers "does anything need me?" without my reading a single ro
   interpreted — observed live, a `429` was a hard session limit, not a rate limit to wait out.
 - Given a `tool_result` carrying `is_error`, then the state is not errored — these are failures the
   agent recovers from on its own; all 16 in this project's transcripts are auto-mode classifier denials.
-- Given any session row is shown, then it carries a state indicator whose **shape** differs per state,
-  so the state is readable without reading the status text and without relying on colour.
-- Given the surface is drawn over a light foreground window and over a dark one, then every indicator
-  stays legible on both — no state is carried by a colour that disappears against either.
-- Given a session is waiting or errored, then its indicator animates; given it is working, idle or
-  unknown, then its indicator is still. Movement on the surface always means something wants the user.
-- Given the indicator animates, then it does so on the existing 1 Hz display timer — no second timer,
-  and no measurable change in CPU over the footprint story 001 recorded (0.32 s over 90 s).
+- Given any session row is shown, then it carries a state dot, and the dot's **colour** distinguishes
+  the state — green working, grey idle, orange waiting, red errored. (Amended after first use; see
+  Amended During Build.)
+- Given a session's state is unknown, then its dot is a hollow ring rather than a filled disc. Idle and
+  unknown are both grey, and story 001's rule is that an unreadable state is never conflated with idle.
+- Given a session's project name wraps to more than one line, then the dot and the age stay level with
+  the **first** line, not centred against the whole block.
+- Given the surface is drawn over a light foreground window and over a dark one, then every dot stays
+  visible on both.
+- Given a session is waiting or errored, then its dot breathes; given it is working, idle or unknown,
+  then its dot is still. Movement on the surface always means something wants the user.
+- Given a dot breathes, then it does so through Core Animation rather than a redraw on a timer, so the
+  surface's per-second work is unchanged from story 001.
 - Given a Codex session, then its state remains `Working | Idle | Unknown` — unchanged by this story,
   for the reason the spike settled.
 - Given the automated tests are run with `./test.sh`, then they pass.
@@ -95,25 +100,26 @@ Verified against the running app 2026-08-25, build `86306`:
   on two independent sessions — `64999.json` at 01:40:27 and `72185.json` at 01:42:07 — each at the
   moment its session put a question to the user. Under the previous build both rows read
   `State unknown`.
-- **All five states drawn and distinguishable**: filled disc (working), hollow ring (idle), orange
-  triangle (waiting), red cross (errored), hollow diamond (unknown). Confirmed on screen with a
-  waiting row and an errored row live beside real sessions.
+- **All five states drawn and distinguishable.** Originally as five shapes; after the amendment below,
+  as coloured dots — green working, grey idle, orange waiting, red errored, grey ring unknown.
+  Confirmed on screen both times, with a waiting row and an errored row live beside real sessions.
 - **The errored path end to end**: a staged profile whose transcript ended in an `isApiErrorMessage`
   with `apiErrorStatus: 529` produced a row reading `Error: 529`, from a registry file anchored to a
   real live PID and its real `procStart` — the liveness rule was satisfied, not bypassed. Staging was
   reverted: fixture processes killed, fixture directory deleted, and `~/.config/agent-pet/config.json`
   removed (it had not existed beforehand).
-- **Only the attention states move.** Two captures one second apart show the cross and the triangle
-  visibly dimmed while the idle ring is unchanged.
+- **Only the attention states move.** Two captures one second apart show the red and orange dots
+  between dim and full while the green and grey dots are unchanged.
 - **Legible over light and dark.** Captured over a dark editor and over a white full-window image; all
-  indicators stay readable on both, and shape distinguishes every state without reference to colour.
+  indicators stay readable on both.
 - **Footprint — measurable change not detectable by this method, which is weaker than proving there is
   none.** Three 90-second samples of the same process: 0.43 s CPU with 3 static rows; 0.74 s with 7
   rows of which 4 were animating; 1.58 s with the same 7 rows and none animating. The run *with*
   animation was cheaper than its own control, so run-to-run variance on a working machine exceeds
   whatever the animation costs. All samples are under 2% of one core. The structural claim is the
-  firmer one: animation reuses the existing 1 Hz display timer, adds no second clock, and a still state
-  redraws nothing (`StateIndicatorView.advance()` returns early unless the state wants attention).
+  firmer one, and the amendment below strengthened it: the breath is a Core Animation opacity pulse
+  running in the render server, so this process does no per-frame work for it at all and the display
+  timer went back to doing nothing but the age counters.
 
 ## Design Requirement
 - No separate design needed. The observation channels are the ones the pet already reads — the Claude
@@ -167,3 +173,20 @@ disk:
   "transient" cannot be read off a flag, and the newest-entry-plus-status pairing above does that work
   instead.
 - **Codex defines the events but never writes one** — settled by the spike above.
+
+## Amended During Build
+- **Shape replaced by colour** (developer's call, after first use). The dot originally carried state by
+  shape — disc, ring, triangle, cross, diamond — with colour only reinforcing it, chosen so that no
+  state depended on a colour holding contrast against an unpredictable background, and so that red and
+  green were never the only difference between two states. The developer disliked it in use and chose
+  coloured circles instead. Recorded here rather than left as a spec claiming something untrue: the
+  criterion now says colour distinguishes the states, and the two properties shape was buying are
+  genuinely given up. One shape distinction is kept — `unknown` is a ring — because idle and unknown
+  are both grey and would otherwise be the same dot, which story 001 forbids outright.
+- **The breath moved off the display timer** (same round). A one-second alpha toggle is a blink, not a
+  breath. It is now a `CABasicAnimation` on the layer's opacity, autoreversing over 1.1 s: smoother,
+  and cheaper — it runs in the render server, so the pet spends no per-frame CPU on it.
+- **Dot alignment fixed** (defect found in use). The row's header stack aligned on `.centerY`, so a
+  project name wrapping to two lines left the dot floating between them, level with neither. It aligns
+  on `.firstBaseline` now, with `StateIndicatorView` overriding `firstBaselineOffsetFromTop`.
+

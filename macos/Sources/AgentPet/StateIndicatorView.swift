@@ -1,39 +1,47 @@
 import AppKit
+import QuartzCore
 
-/// The mark at the head of a session row that carries its state.
+/// The dot at the head of a session row that carries its state.
 ///
-/// **Shape carries the state; colour only reinforces it.** Two reasons, both from
-/// this surface rather than from general principle. The panel is translucent over
-/// whatever window happens to be behind it, so no colour can be relied on to hold
-/// its contrast — story 001 verified rows over both dark and light foregrounds.
-/// And colour alone is unreadable to a viewer who cannot separate red from green.
-/// A silhouette survives both: filled disc, hollow ring, triangle, cross, diamond
-/// are told apart at a glance and at this size.
+/// Every state is a circle and the colour is what tells them apart, with one
+/// exception: `unknown` is drawn as a ring rather than a disc. Idle and unknown
+/// are both grey — nothing else honest to colour them — and a filled grey dot for
+/// each would make them the same dot. Story 001's rule is that an unreadable
+/// state is never conflated with idle, so the ring is what keeps that true.
 ///
-/// **Only the attention states move.** Working, idle and unknown are drawn still,
-/// so any movement on the surface means something wants the user — which is what
-/// makes the pet readable from the corner of an eye while another window is
-/// focused. Motion costs nothing extra: it advances on the one-second display
-/// timer the age counters already run on, so there is no second clock and no
-/// measurable CPU beyond what the surface was spending anyway.
+/// **Only the attention states breathe.** Working, idle and unknown hold still,
+/// so movement anywhere on the surface means something is asking for the user
+/// rather than merely reporting — which is what makes the pet readable from the
+/// corner of an eye while another window is focused.
+///
+/// The breath is a Core Animation opacity pulse rather than a redraw on a timer.
+/// It runs in the render server, so it costs no per-frame CPU in this process, it
+/// keeps animating without the display clock, and it is smooth rather than the
+/// one-second blink a timer could produce.
 final class StateIndicatorView: NSView {
     static let size: CGFloat = 9
 
-    private var state: SessionState = .unknown
-    /// Which half of the two-frame pulse the attention states are showing.
-    private var pulseOn = true
+    private static let breathKey = "breath"
+    private let dot = CAShapeLayer()
+    private var state: SessionState
 
     override var intrinsicContentSize: NSSize {
         NSSize(width: Self.size, height: Self.size)
     }
 
-    override var isFlipped: Bool { false }
+    /// Sit the dot on the text baseline, so a row whose project name wraps to two
+    /// lines keeps its dot beside the *first* line rather than centred against the
+    /// whole block.
+    override var firstBaselineOffsetFromTop: CGFloat { Self.size }
 
     init(state: SessionState) {
-        super.init(frame: NSRect(x: 0, y: 0, width: Self.size, height: Self.size))
         self.state = state
+        super.init(frame: NSRect(x: 0, y: 0, width: Self.size, height: Self.size))
+        wantsLayer = true
+        layer?.addSublayer(dot)
         setContentHuggingPriority(.required, for: .horizontal)
         setContentCompressionResistancePriority(.required, for: .horizontal)
+        redraw()
     }
 
     required init?(coder: NSCoder) { fatalError("not used") }
@@ -41,93 +49,72 @@ final class StateIndicatorView: NSView {
     func apply(_ state: SessionState) {
         guard state != self.state else { return }
         self.state = state
-        // A state change restarts the pulse at full strength, so a row that has
-        // just started asking for attention is never caught mid-fade.
-        pulseOn = true
-        needsDisplay = true
+        redraw()
     }
 
-    /// Advance the pulse one frame. Called from the surface's one-second timer.
-    ///
-    /// A still state redraws nothing: the great majority of rows are working or
-    /// idle, and they must not pay for a feature they do not use.
-    func advance() {
-        guard state.wantsAttention else { return }
-        pulseOn.toggle()
-        needsDisplay = true
+    override func layout() {
+        super.layout()
+        redraw()
     }
 
-    override func draw(_ dirtyRect: NSRect) {
+    /// Appearance changes (light to dark, or the panel's material shifting) do not
+    /// re-resolve a `CGColor` that was captured earlier, so the dot is rebuilt.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        redraw()
+    }
+
+    private func redraw() {
         let box = bounds.insetBy(dx: 0.5, dy: 0.5)
-        var colour = tint
-        if state.wantsAttention && !pulseOn {
-            colour = colour.withAlphaComponent(0.3)
-        }
-        colour.setFill()
-        colour.setStroke()
+        dot.frame = bounds
 
-        switch state {
-        case .working:
-            NSBezierPath(ovalIn: box).fill()
-        case .idle:
-            let ring = NSBezierPath(ovalIn: box.insetBy(dx: 0.75, dy: 0.75))
-            ring.lineWidth = 1.5
-            ring.stroke()
-        case .waiting:
-            triangle(in: box).fill()
-        case .errored:
-            cross(in: box).stroke()
-        case .unknown:
-            let diamond = self.diamond(in: box)
-            diamond.lineWidth = 1.3
-            diamond.stroke()
+        // Geometry changes must not animate: a state flip should read as an
+        // instant change of colour, not a shape sliding into place.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if state == .unknown {
+            dot.path = CGPath(ellipseIn: box.insetBy(dx: 0.75, dy: 0.75), transform: nil)
+            dot.fillColor = nil
+            dot.strokeColor = tint.cgColor
+            dot.lineWidth = 1.5
+        } else {
+            dot.path = CGPath(ellipseIn: box, transform: nil)
+            dot.fillColor = tint.cgColor
+            dot.strokeColor = nil
+            dot.lineWidth = 0
         }
+        CATransaction.commit()
+
+        setBreathing(state.wantsAttention)
     }
 
-    /// The colour is a second channel, never the only one.
-    ///
-    /// System colours are used rather than fixed values so they follow the
-    /// appearance the panel is drawn in, and the two calm states borrow the same
-    /// label colours the rest of the row already uses.
+    private func setBreathing(_ on: Bool) {
+        guard on else {
+            dot.removeAnimation(forKey: Self.breathKey)
+            dot.opacity = 1
+            return
+        }
+        guard dot.animation(forKey: Self.breathKey) == nil else { return }
+        let breath = CABasicAnimation(keyPath: "opacity")
+        breath.fromValue = 1.0
+        breath.toValue = 0.28
+        breath.duration = 1.1
+        breath.autoreverses = true
+        breath.repeatCount = .infinity
+        breath.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        dot.add(breath, forKey: Self.breathKey)
+    }
+
+    /// With shape no longer distinguishing the states, colour is doing the whole
+    /// job. System colours are used rather than fixed values so they follow the
+    /// appearance the panel is drawn in.
     private var tint: NSColor {
         switch state {
-        case .working: return .labelColor
+        case .working: return .systemGreen
         case .idle: return .tertiaryLabelColor
         case .waiting: return .systemOrange
         case .errored: return .systemRed
-        case .unknown: return .tertiaryLabelColor
+        case .unknown: return .secondaryLabelColor
         }
-    }
-
-    /// Pointing right — the row is handing the turn back to the user.
-    private func triangle(in box: NSRect) -> NSBezierPath {
-        let p = NSBezierPath()
-        p.move(to: NSPoint(x: box.minX + 0.5, y: box.maxY))
-        p.line(to: NSPoint(x: box.maxX, y: box.midY))
-        p.line(to: NSPoint(x: box.minX + 0.5, y: box.minY))
-        p.close()
-        return p
-    }
-
-    private func cross(in box: NSRect) -> NSBezierPath {
-        let p = NSBezierPath()
-        let inset = box.insetBy(dx: 1, dy: 1)
-        p.move(to: NSPoint(x: inset.minX, y: inset.minY))
-        p.line(to: NSPoint(x: inset.maxX, y: inset.maxY))
-        p.move(to: NSPoint(x: inset.minX, y: inset.maxY))
-        p.line(to: NSPoint(x: inset.maxX, y: inset.minY))
-        p.lineWidth = 1.6
-        p.lineCapStyle = .round
-        return p
-    }
-
-    private func diamond(in box: NSRect) -> NSBezierPath {
-        let p = NSBezierPath()
-        p.move(to: NSPoint(x: box.midX, y: box.maxY))
-        p.line(to: NSPoint(x: box.maxX, y: box.midY))
-        p.line(to: NSPoint(x: box.midX, y: box.minY))
-        p.line(to: NSPoint(x: box.minX, y: box.midY))
-        p.close()
-        return p
     }
 }

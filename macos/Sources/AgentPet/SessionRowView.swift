@@ -25,10 +25,14 @@ final class SessionRowView: NSView {
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        // Baseline, not centre. A project name that wraps to two lines made a
+        // centred dot drift to the middle of the block, level with neither line;
+        // aligning on the first baseline keeps the dot and the age beside the
+        // first line however many lines the name takes.
         let top = NSStackView(views: [indicator, nameLabel, ageLabel])
         top.orientation = .horizontal
         top.distribution = .fill
-        top.alignment = .centerY
+        top.alignment = .firstBaseline
         top.spacing = 6
         NSLayoutConstraint.activate([
             indicator.widthAnchor.constraint(equalToConstant: StateIndicatorView.size),
@@ -74,9 +78,11 @@ final class SessionRowView: NSView {
     }
 
     /// One frame of the surface's one-second clock.
+    ///
+    /// Only the age needs it. The indicator breathes in the render server and
+    /// keeps its own time.
     func tick() {
         refreshAge()
-        indicator.advance()
     }
 
     /// Which agent, then which project.

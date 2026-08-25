@@ -12,19 +12,19 @@ One row per live session: which agent, the project, what that session is current
 doing, and how many seconds ago that was observed.
 
 ```
-● Claude agent-agnostic-pet           1s
+● Claude agent-agnostic-pet           1s     green
   Reading backlog.md
 
-● Codex agent-agnostic-pet            4s
+● Codex agent-agnostic-pet            4s     green
   Inspecting SSH configs and hosts
 
-▶ Claude claude-code-experimental    36s
+● Claude claude-code-experimental    36s     orange
   Bash command approval
 
-✕ Claude margin-release              2m 4s
+● Claude margin-release             2m 4s    red
   Error: 529
 
-○ Claude scratch-experiments          1s
+● Claude scratch-experiments          1s     grey
   Idle
 ```
 
@@ -37,19 +37,20 @@ need me?" without reading a word:
 
 | | |
 |---|---|
-| ● filled disc | working — the line beneath says what it is doing |
-| ○ hollow ring | idle — finished its turn, costing nothing to leave alone |
-| ▶ orange triangle | waiting on you, in the agent's own words (`input needed`, `dialog open`) |
-| ✕ red cross | stopped on an error it did not recover from, with the status code where there is one |
-| ◇ hollow diamond | state could not be read — never guessed |
+| green | working — the line beneath says what it is doing |
+| grey | idle — finished its turn, costing nothing to leave alone |
+| orange | waiting on you, in the agent's own words (`input needed`, `dialog open`) |
+| red | stopped on an error it did not recover from, with the status code where there is one |
+| grey ring | state could not be read — never guessed |
 
-Shape carries the state and colour only reinforces it: the surface is translucent over
-whatever window is behind it, so no colour holds its contrast, and colour alone is
-unreadable to anyone who cannot separate red from green. **Only the two states that want
-something from you move.** Waiting and errored pulse once a second, on the same timer the
-age counters already run on; everything else is still, so any movement means you are
-needed. Waiting is deliberately not idle — an idle session finished cleanly, a waiting one
-is blocked mid-turn and stays that way until you answer.
+Unknown is the one that is not a filled dot. Idle and unknown are both grey, and an
+unreadable state must never be mistaken for a session that finished cleanly.
+
+**Only the two states that want something from you move.** Waiting and errored breathe —
+a slow opacity pulse driven by Core Animation, so it costs the app no per-frame work —
+while everything else is still. Any movement on the surface means you are needed. Waiting
+is deliberately not idle: an idle session finished cleanly, a waiting one is blocked
+mid-turn and stays that way until you answer.
 
 Attention states are Claude Code only. Codex publishes nothing about them — see below.
 
