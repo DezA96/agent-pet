@@ -5,14 +5,38 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-/// How far back from the end of an unseen rollout to start reading.
+/// How far back from the end of an unseen rollout to read in full.
 ///
 /// Story 001 reads a Claude transcript from offset 0, which is safe at its ~102 KB.
 /// A Codex rollout on this disk is 74 MB and a single-turn session reached 1.3 MB,
 /// so reading one whole would stall a poll for seconds at pet startup. Starting at
 /// bare EOF was rejected as worse: a session already mid-turn would read `unknown`
 /// until its next event, breaking the release's within-a-few-seconds spot check.
+///
+/// This window covers the activity line and, for a settled session, its state:
+/// `task_complete` lands 214 to 4,799 bytes from EOF across every rollout on this
+/// disk, because it is written as the turn ends. A session still *working* is the
+/// other case entirely — see [`MAX_BACKSCAN`].
 const FIRST_READ_WINDOW: u64 = 256 * 1024;
+
+/// How far back to keep looking for a turn boundary when the window held none.
+///
+/// A working session's last boundary is its `task_started`, and that is however
+/// far back the turn began — 987 KB into a live single-turn session measured
+/// here, and 22.8 MB at the widest gap between two boundaries on this disk. No
+/// fixed window reaches that, and a working session is precisely the one the pet
+/// exists to show, so the first sight of a rollout falls back to scanning
+/// backward for a boundary rather than reporting `unknown` for the whole turn.
+///
+/// Only boundaries are looked for here, and a cheap substring test rejects the
+/// enormous `item_completed` lines before any JSON parse, so this stays a memory
+/// scan rather than a parse of tens of megabytes. Past this cap the state is
+/// honestly `unknown`; the next tick tails forward and picks up the next boundary
+/// as it is written.
+const MAX_BACKSCAN: u64 = 64 * 1024 * 1024;
+
+/// How much to pull back per step while scanning for a boundary.
+const BACKSCAN_CHUNK: u64 = 4 * 1024 * 1024;
 
 /// How much of line 1 to read before giving up on it.
 ///
@@ -172,6 +196,17 @@ impl Tailer {
             apply(line, progress);
         }
         progress.offset = start + complete_upto as u64;
+
+        // The window held no boundary and there is file behind it. For a settled
+        // session that cannot happen — `task_complete` sits within a few KB of
+        // EOF — so this is a session mid-turn, whose `task_started` is as far
+        // back as the turn is long. The activity line already read stands: every
+        // item in the window came after whatever boundary this finds.
+        if fresh && progress.state == State::Unknown && start > 0 {
+            if let Some(state) = last_boundary_before(&mut file, start) {
+                progress.state = state;
+            }
+        }
         self.remembered(path)
     }
 
@@ -184,6 +219,61 @@ impl Tailer {
 
     pub fn retain_only(&mut self, keep: &[PathBuf]) {
         self.seen.retain(|k, _| keep.contains(k));
+    }
+}
+
+/// The state named by the last turn boundary before `end`, if one is in reach.
+///
+/// Reads backward in chunks and takes the newest boundary found, which is the one
+/// that decides the state. `None` means no boundary lies within [`MAX_BACKSCAN`] —
+/// reported as `unknown` rather than guessed at.
+fn last_boundary_before(file: &mut std::fs::File, end: u64) -> Option<State> {
+    let floor = end.saturating_sub(MAX_BACKSCAN);
+    let mut hi = end;
+    // The head of the chunk just examined: a line straddling the cut, whose start
+    // lies in the chunk below. Carried down so it is read whole exactly once.
+    let mut carry: Vec<u8> = Vec::new();
+
+    while hi > floor {
+        let lo = hi.saturating_sub(BACKSCAN_CHUNK).max(floor);
+        file.seek(SeekFrom::Start(lo)).ok()?;
+        let mut buf = vec![0u8; (hi - lo) as usize];
+        file.read_exact(&mut buf).ok()?;
+        buf.extend_from_slice(&carry);
+
+        // Everything before the first newline began in the chunk below this one.
+        let head_end = match buf.iter().position(|b| *b == b'\n') {
+            Some(i) if lo > floor => i + 1,
+            _ => 0,
+        };
+        carry = buf[..head_end].to_vec();
+
+        let text = String::from_utf8_lossy(&buf[head_end..]);
+        if let Some(state) = text.lines().rev().find_map(boundary_state) {
+            return Some(state);
+        }
+        hi = lo;
+    }
+    None
+}
+
+/// The state one line names, if it is a turn boundary at all.
+///
+/// The substring test is what keeps the backscan cheap: `item_completed` lines
+/// reach tens of KB each and make up nearly every byte of a rollout, and this
+/// rejects them without handing any of it to a JSON parser.
+fn boundary_state(line: &str) -> Option<State> {
+    if !line.contains("task_started") && !line.contains("task_complete") {
+        return None;
+    }
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    if v.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    match v.get("payload")?.get("type").and_then(Value::as_str) {
+        Some("task_started") => Some(State::Working),
+        Some("task_complete") => Some(State::Idle),
+        _ => None,
     }
 }
 
@@ -458,16 +548,85 @@ mod tests {
         assert_eq!(t.seen.get(&p).unwrap().offset, len, "the read did not reach EOF");
     }
 
-    /// A window that opens after the last boundary reports unknown rather than guessing.
+    /// A working session whose turn began far outside the window.
+    ///
+    /// This is the ordinary case, not an exotic one: a live session's own rollout
+    /// reached 987 KB with its single `task_started` at the top, because one
+    /// `item_completed` line runs to tens of KB. Reporting `unknown` for the whole
+    /// turn would blank the state of exactly the session worth watching.
     #[test]
-    fn an_oversized_rollout_whose_boundary_is_out_of_window_is_unknown() {
-        let p = dir().join("tail-oversized-noboundary.jsonl");
+    fn a_working_session_is_found_even_when_its_turn_began_outside_the_window() {
+        let p = dir().join("tail-far-boundary.jsonl");
         let mut f = std::fs::File::create(&p).unwrap();
         writeln!(f, "{}", meta_line("i", "/c", "\"cli\"", "user")).unwrap();
         writeln!(f, "{}", started()).unwrap();
-        let filler = reasoning("Padding after the only boundary in the file");
+        let filler = reasoning("Padding written since the turn began");
         let mut written = 0u64;
-        while written < FIRST_READ_WINDOW * 2 {
+        while written < FIRST_READ_WINDOW * 3 {
+            writeln!(f, "{filler}").unwrap();
+            written += filler.len() as u64 + 1;
+        }
+        writeln!(f, "{}", reasoning("The newest thing")).unwrap();
+        f.sync_all().unwrap();
+
+        let (state, activity) = Tailer::new().read(&p);
+        assert_eq!(state, State::Working, "a live turn read as unknown");
+        assert_eq!(activity.as_deref(), Some("The newest thing"));
+    }
+
+    /// The same, for a turn that finished long before the window opened.
+    #[test]
+    fn an_idle_session_is_found_the_same_way() {
+        let p = dir().join("tail-far-boundary-idle.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "{}", meta_line("i", "/c", "\"cli\"", "user")).unwrap();
+        writeln!(f, "{}", started()).unwrap();
+        writeln!(f, "{}", complete()).unwrap();
+        let filler = reasoning("Padding after the turn ended");
+        let mut written = 0u64;
+        while written < FIRST_READ_WINDOW * 3 {
+            writeln!(f, "{filler}").unwrap();
+            written += filler.len() as u64 + 1;
+        }
+        f.sync_all().unwrap();
+
+        assert_eq!(Tailer::new().read(&p).0, State::Idle);
+    }
+
+    /// A boundary split across two backscan chunks is still read whole.
+    #[test]
+    fn a_boundary_straddling_a_backscan_chunk_is_not_lost() {
+        let p = dir().join("tail-straddle.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "{}", meta_line("i", "/c", "\"cli\"", "user")).unwrap();
+        // Pad so the boundary lands near a chunk edge, then far more than one
+        // chunk of filler after it, forcing at least two backward steps.
+        let filler = reasoning("Padding before the boundary");
+        let mut written = 0u64;
+        while written < BACKSCAN_CHUNK + 1024 {
+            writeln!(f, "{filler}").unwrap();
+            written += filler.len() as u64 + 1;
+        }
+        writeln!(f, "{}", started()).unwrap();
+        let mut written = 0u64;
+        while written < BACKSCAN_CHUNK + FIRST_READ_WINDOW * 2 {
+            writeln!(f, "{filler}").unwrap();
+            written += filler.len() as u64 + 1;
+        }
+        f.sync_all().unwrap();
+
+        assert_eq!(Tailer::new().read(&p).0, State::Working);
+    }
+
+    /// A rollout with no boundary anywhere is still unknown, not guessed.
+    #[test]
+    fn an_oversized_rollout_with_no_boundary_at_all_is_unknown() {
+        let p = dir().join("tail-oversized-noboundary.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "{}", meta_line("i", "/c", "\"cli\"", "user")).unwrap();
+        let filler = reasoning("Padding in a rollout that never took a turn");
+        let mut written = 0u64;
+        while written < FIRST_READ_WINDOW * 3 {
             writeln!(f, "{filler}").unwrap();
             written += filler.len() as u64 + 1;
         }

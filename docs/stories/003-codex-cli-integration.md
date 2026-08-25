@@ -138,6 +138,19 @@ it fails the first gate — nothing here is expensive to reverse. The spike land
   for seconds at pet startup. Starting at bare EOF was rejected as worse: a session already mid-turn
   would show `Unknown` until its next event, breaking the release's within-a-few-seconds spot-check.
   This is the only genuinely new machinery in the story.
+- **Corrected during live verification: a fixed window cannot find a working session's
+  boundary.** The note above sized the window at ~256 KB, on the observation that a
+  rollout's last turn boundary sits near its end. That holds only for a *settled*
+  session: `task_complete` lands 214 to 4,799 bytes from EOF across every rollout on this
+  disk, because it is written as the turn ends. A session still **working** has
+  `task_started` as its last boundary, and that is as far back as the turn is long — the
+  first live session tested read 987 KB, and the widest gap between two boundaries on
+  this disk is 22.8 MB. The pet showed `unknown` for the one session it most exists to
+  show. First sight now falls back to scanning backward for a boundary in 4 MB chunks
+  when the window holds none, rejecting the enormous `item_completed` lines with a
+  substring test before any JSON parse: 2 ms on the 70 MB rollout, ~15 ms at the 22.8 MB
+  worst case, against 130 ms for a whole cold poll. Past 64 MB the state is honestly
+  `unknown` and the next tick picks up the boundary as it is written.
 - **Session identity comes from line 1 of the rollout, never from `~/.codex/state_5.sqlite`.** Every
   rollout opens with a `session_meta` line carrying `cwd`, `id`, `source`, `thread_source`,
   `originator` and `cli_version` — verified identical in shape across 0.143.0, 0.147.0 and

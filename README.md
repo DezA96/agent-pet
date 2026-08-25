@@ -83,7 +83,10 @@ while some live process holds it open **and** its first line says `source: "cli"
 `thread_source: "user"` — which is also what excludes Codex Desktop threads, subagent
 threads, and ChatGPT.app's own `codex` process, none of which hold a CLI rollout.
 Rollouts reach 74 MB, so an unseen one is read backward from its end over a bounded
-window and tailed forward after that. `~/.codex/state_5.sqlite` is never opened.
+window and tailed forward after that; where that window holds no turn boundary — a
+session mid-turn has written everything since its turn began, up to 22.8 MB here — it
+keeps scanning backward for one rather than reporting an unknown state.
+`~/.codex/state_5.sqlite` is never opened.
 
 A session whose most recent turn boundary cannot be found reads `state unknown` — never
 guessed as idle or working. A Codex session that has taken no turn yet has written no
