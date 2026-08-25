@@ -5,11 +5,12 @@ use serde::Serialize;
 /// `Unknown` is a real, reportable state — never a placeholder to be resolved
 /// into `Working` or `Idle` by inference. If an adapter cannot read a session's
 /// working state, it says so.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
     Working,
     Idle,
+    #[default]
     Unknown,
 }
 
@@ -52,6 +53,27 @@ pub fn disambiguate(sessions: &mut [AgentSession]) {
             s.display_name = format!("{} ({})", s.display_name, suffix);
         }
     }
+}
+
+const MAX_ACTIVITY_CHARS: usize = 45;
+
+/// Trim an activity line to the pet's width, on a word boundary where one is
+/// close enough.
+///
+/// The width belongs to the pet's surface rather than to any one agent, so every
+/// adapter's line is cut by this same rule and no row can out-grow another's.
+pub fn truncate_activity(s: &str) -> String {
+    let s = s.replace(['\n', '\r', '\t'], " ");
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if s.chars().count() <= MAX_ACTIVITY_CHARS {
+        return s;
+    }
+    let cut: String = s.chars().take(MAX_ACTIVITY_CHARS).collect();
+    let trimmed = match cut.rfind(' ') {
+        Some(i) if i >= MAX_ACTIVITY_CHARS / 2 => &cut[..i],
+        _ => cut.as_str(),
+    };
+    format!("{}…", trimmed.trim_end())
 }
 
 pub fn now_ms() -> u64 {

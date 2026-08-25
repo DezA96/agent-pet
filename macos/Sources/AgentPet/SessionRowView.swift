@@ -2,9 +2,10 @@ import AppKit
 
 /// One live session.
 ///
-/// Layout is: project name, then the state or the activity line, then a count-up
-/// of seconds since the status was observed. The age is always on screen so
-/// staleness is visible directly rather than inferred from a tuned threshold.
+/// Layout is: which agent and which project, then the state or the activity line,
+/// then a count-up of seconds since the status was observed. The age is always on
+/// screen so staleness is visible directly rather than inferred from a tuned
+/// threshold.
 final class SessionRowView: NSView {
     private let nameLabel = Style.label("", font: Style.rowFont, color: Style.primary)
     private let detailLabel = Style.label("", font: Style.detailFont, color: Style.secondary)
@@ -48,10 +49,28 @@ final class SessionRowView: NSView {
 
     func apply(_ session: AgentSession) {
         self.session = session
-        nameLabel.stringValue = session.displayName
+        nameLabel.attributedStringValue = title(for: session)
         nameLabel.toolTip = session.projectPath
         detailLabel.stringValue = detailText(for: session)
         refreshAge()
+    }
+
+    /// Which agent, then which project.
+    ///
+    /// The agent is drawn from whatever `agentId` the core sent, so the pet holds
+    /// no table of agent names and adding an agent changes nothing here. It sits
+    /// in the secondary colour because the project is what the eye is looking
+    /// for; the agent only has to be legible without a click.
+    private func title(for session: AgentSession) -> NSAttributedString {
+        let title = NSMutableAttributedString(
+            string: session.agentId.sentenceCased + " ",
+            attributes: [.font: Style.rowFont, .foregroundColor: Style.secondary]
+        )
+        title.append(NSAttributedString(
+            string: session.displayName,
+            attributes: [.font: Style.rowFont, .foregroundColor: Style.primary]
+        ))
+        return title
     }
 
     /// What the row says under the project name.

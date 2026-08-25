@@ -1,9 +1,8 @@
+use crate::session::truncate_activity as truncate;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-
-const MAX_ACTIVITY_CHARS: usize = 45;
 
 /// Reads transcripts forward from where it last stopped.
 ///
@@ -159,21 +158,6 @@ fn salient_argument(input: &Value) -> Option<String> {
     None
 }
 
-/// Trim to the pet's width, on a word boundary where one is close enough.
-fn truncate(s: &str) -> String {
-    let s = s.replace(['\n', '\r', '\t'], " ");
-    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if s.chars().count() <= MAX_ACTIVITY_CHARS {
-        return s;
-    }
-    let cut: String = s.chars().take(MAX_ACTIVITY_CHARS).collect();
-    let trimmed = match cut.rfind(' ') {
-        Some(i) if i >= MAX_ACTIVITY_CHARS / 2 => &cut[..i],
-        _ => cut.as_str(),
-    };
-    format!("{}…", trimmed.trim_end())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,7 +196,7 @@ mod tests {
     fn long_descriptions_are_truncated_on_a_word_boundary() {
         let input = json!({"description": "Find and delete every temporary file recursively across the tree"});
         let out = derive_activity("Bash", &input);
-        assert!(out.chars().count() <= MAX_ACTIVITY_CHARS + 1, "got {out:?}");
+        assert!(out.chars().count() <= 46, "got {out:?}");
         assert!(out.ends_with('…'));
         assert!(!out.contains("  "));
     }

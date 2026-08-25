@@ -180,7 +180,7 @@ mod tests {
     fn table(pairs: &[(u32, &str)]) -> FakeProcessTable {
         FakeProcessTable {
             starts: pairs.iter().map(|(p, s)| (*p, s.to_string())).collect(),
-            dirs: Vec::new(),
+            ..Default::default()
         }
     }
 

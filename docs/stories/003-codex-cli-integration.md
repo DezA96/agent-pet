@@ -4,7 +4,7 @@
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md))
 
 ## Status
-Draft
+Implemented
 
 ## User Outcome
 As the developer, using more than one coding agent, I want every currently running Codex CLI session to
@@ -98,6 +98,15 @@ re-derived each tick. Three internal contracts move:
   the fault instead of surfacing it.
 - **Liveness against fixtures, not against the machine.** The fake `ProcessTable` supplies both the
   named PIDs and their open paths, so the join is tested without a Codex session running.
+- **What the fixtures actually landed as** (build). Two corrections to the estimate above.
+  `formatted_output` holds a second copy of every command's captured output — 44 KB on a
+  single line — and had to be scrubbed alongside `stdout`; without it the "reduced" CLI
+  rollout was still 349 KB and the Desktop one 4.2 MB. And the Desktop fixture is now
+  **line 1 plus turn boundaries only**: the `source='vscode'` filter stops at
+  `session_meta`, so its item lines were never parsed by any test, while carrying an
+  unrelated client project's name and document paths into this repository. Final sizes
+  are 22 KB, 17 KB and 1.4 KB. The CLI fixture is kept whole because it is the one a test
+  parses end to end.
 - `./test.sh` passes, and `cargo test --manifest-path core/Cargo.toml` passes.
 - **Manual verification** in a real session, since no fixture proves the join itself: a live `codex`
   TUI appears as a row on its first turn, its activity line tracks what the session is doing, the row

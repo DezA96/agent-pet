@@ -7,6 +7,7 @@
 
 pub mod adapter;
 pub mod claude;
+pub mod codex;
 pub mod config;
 pub mod procs;
 pub mod profiles;
@@ -56,7 +57,10 @@ pub struct Observer {
 impl Observer {
     pub fn new() -> Self {
         Observer {
-            adapters: vec![Box::new(claude::ClaudeAdapter::new())],
+            adapters: vec![
+                Box::new(claude::ClaudeAdapter::new()),
+                Box::new(codex::CodexAdapter::new()),
+            ],
             procs: SystemProcessTable::new(),
             previous: std::collections::HashMap::new(),
         }
@@ -245,21 +249,50 @@ mod tests {
     #[test]
     fn a_successful_poll_with_nothing_running_is_ok_and_empty() {
         // Distinct from a failure: the pet shows "no agents running", not an error.
-        let procs = FakeProcessTable {
-            starts: Default::default(),
-            dirs: vec![],
-        };
+        let procs = FakeProcessTable::default();
         let p = Observer::new().poll(&procs);
         assert!(p.ok);
         assert!(p.error.is_none());
     }
 
     #[test]
-    fn the_payload_shape_is_what_the_frontend_decodes() {
+    fn a_failing_codex_discovery_leaves_the_poll_and_the_claude_rows_intact() {
+        // One healthy Claude session, and a `codex` process holding nothing a
+        // rollout reader can make sense of. An adapter that cannot answer must
+        // cost the tick nothing but its own rows.
+        let profile = std::env::temp_dir().join("agentpet-poll-isolation");
+        let _ = std::fs::remove_dir_all(&profile);
+        std::fs::create_dir_all(profile.join("sessions")).unwrap();
+        std::fs::write(
+            profile.join("sessions").join("900.json"),
+            r#"{"pid":900,"sessionId":"sess-live","cwd":"/Users/x/omega","procStart":"Mon Aug 24 04:00:00 2026","entrypoint":"cli","status":"busy"}"#,
+        )
+        .unwrap();
+
         let procs = FakeProcessTable {
-            starts: Default::default(),
-            dirs: vec![],
+            starts: std::collections::HashMap::from([(900, "Mon Aug 24 04:00:00 2026".to_string())]),
+            dirs: vec![profile],
+            named: std::collections::HashMap::from([("codex".to_string(), vec![901])]),
+            open: std::collections::HashMap::from([(
+                901,
+                vec![std::path::PathBuf::from("/nonexistent/rollout-gone.jsonl")],
+            )]),
         };
+
+        let p = Observer::new().poll(&procs);
+        assert!(p.ok, "a Codex failure failed the whole poll");
+        assert!(p.error.is_none());
+        assert!(
+            p.sessions.iter().any(|s| s.session_key == "sess-live"),
+            "the Claude row was lost: {:?}",
+            p.sessions
+        );
+        assert!(p.sessions.iter().all(|s| s.agent_id != "codex"));
+    }
+
+    #[test]
+    fn the_payload_shape_is_what_the_frontend_decodes() {
+        let procs = FakeProcessTable::default();
         let p = Observer::new().poll(&procs);
         let json = serde_json::to_string(&p).unwrap();
         let back: serde_json::Value = serde_json::from_str(&json).unwrap();

@@ -40,8 +40,8 @@ mod tests {
 
     fn procs(dirs: Vec<PathBuf>) -> FakeProcessTable {
         FakeProcessTable {
-            starts: Default::default(),
             dirs,
+            ..Default::default()
         }
     }
 
