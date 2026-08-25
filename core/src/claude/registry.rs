@@ -18,9 +18,26 @@ pub struct RegistryEntry {
     pub entrypoint: Option<String>,
     #[serde(default)]
     pub name: Option<String>,
-    /// `busy` or `idle`. Absent for entrypoints that publish no status.
+    /// `busy`, `idle`, `waiting` or `shell`. Absent for entrypoints that publish
+    /// no status at all.
+    ///
+    /// Story 001 recorded this as `busy|idle`, which was wrong and cost the pet a
+    /// state: the agent publishes `waiting` whenever a session is blocked on a
+    /// dialog, and `shell` while the user drives a shell inside it. Both landed in
+    /// `Unknown`, so a session sitting on a permission prompt read as "state
+    /// unknown" rather than as the one thing on screen actually asking for the
+    /// user.
     #[serde(default)]
     pub status: Option<String>,
+    /// Why a `waiting` session is waiting, in the agent's own words — e.g.
+    /// `sandbox request`, `input needed`, `worker request`, `dialog open`, or
+    /// whatever the live dialog calls itself.
+    ///
+    /// Not a closed set: the agent passes its top dialog's own label straight
+    /// through, so this is rendered as arbitrary text and truncated like any
+    /// other line.
+    #[serde(default)]
+    pub waiting_for: Option<String>,
 }
 
 pub fn parse(raw: &str) -> Option<RegistryEntry> {

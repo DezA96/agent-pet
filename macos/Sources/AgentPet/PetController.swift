@@ -116,7 +116,7 @@ final class PetController: NSObject, NSWindowDelegate {
         isShowing.toggle()
         if isShowing {
             panel.orderFrontRegardless()
-            rows.values.forEach { $0.refreshAge() }
+            rows.values.forEach { $0.tick() }
             startDisplayClock()
         } else {
             panel.orderOut(nil)
@@ -128,7 +128,7 @@ final class PetController: NSObject, NSWindowDelegate {
     private func startDisplayClock() {
         guard displayTimer == nil else { return }
         let display = Timer(timeInterval: Self.displayInterval, repeats: true) { [weak self] _ in
-            self?.rows.values.forEach { $0.refreshAge() }
+            self?.rows.values.forEach { $0.tick() }
         }
         RunLoop.main.add(display, forMode: .common)
         displayTimer = display

@@ -4,7 +4,7 @@
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md))
 
 ## Status
-In Progress
+Done
 
 ## User Outcome
 As the developer, I want a session that is blocked on me or has died to look different from one that is working,
@@ -85,6 +85,35 @@ so that a glance answers "does anything need me?" without my reading a single ro
   value read from the CLI bundle rather than observed, so it is not called met until seen live.
 - Manual: the surface over a light and a dark foreground window, confirming every indicator stays
   legible on both.
+
+Run 2026-08-25: `./test.sh` — 18 Swift tests and 104 Rust tests pass (13 of the Rust tests are new).
+
+Verified against the running app 2026-08-25, build `86306`:
+
+- **`status: "waiting"` observed live on disk**, which is what the bundle read alone could not settle.
+  A watcher polling every registry file every 250 ms caught `status='waiting' waitingFor='input needed'`
+  on two independent sessions — `64999.json` at 01:40:27 and `72185.json` at 01:42:07 — each at the
+  moment its session put a question to the user. Under the previous build both rows read
+  `State unknown`.
+- **All five states drawn and distinguishable**: filled disc (working), hollow ring (idle), orange
+  triangle (waiting), red cross (errored), hollow diamond (unknown). Confirmed on screen with a
+  waiting row and an errored row live beside real sessions.
+- **The errored path end to end**: a staged profile whose transcript ended in an `isApiErrorMessage`
+  with `apiErrorStatus: 529` produced a row reading `Error: 529`, from a registry file anchored to a
+  real live PID and its real `procStart` — the liveness rule was satisfied, not bypassed. Staging was
+  reverted: fixture processes killed, fixture directory deleted, and `~/.config/agent-pet/config.json`
+  removed (it had not existed beforehand).
+- **Only the attention states move.** Two captures one second apart show the cross and the triangle
+  visibly dimmed while the idle ring is unchanged.
+- **Legible over light and dark.** Captured over a dark editor and over a white full-window image; all
+  indicators stay readable on both, and shape distinguishes every state without reference to colour.
+- **Footprint — measurable change not detectable by this method, which is weaker than proving there is
+  none.** Three 90-second samples of the same process: 0.43 s CPU with 3 static rows; 0.74 s with 7
+  rows of which 4 were animating; 1.58 s with the same 7 rows and none animating. The run *with*
+  animation was cheaper than its own control, so run-to-run variance on a working machine exceeds
+  whatever the animation costs. All samples are under 2% of one core. The structural claim is the
+  firmer one: animation reuses the existing 1 Hz display timer, adds no second clock, and a still state
+  redraws nothing (`StateIndicatorView.advance()` returns early unless the state wants attention).
 
 ## Design Requirement
 - No separate design needed. The observation channels are the ones the pet already reads — the Claude

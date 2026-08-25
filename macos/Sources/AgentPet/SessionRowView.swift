@@ -2,11 +2,12 @@ import AppKit
 
 /// One live session.
 ///
-/// Layout is: which agent and which project, then the state or the activity line,
-/// then a count-up of seconds since the status was observed. The age is always on
-/// screen so staleness is visible directly rather than inferred from a tuned
-/// threshold.
+/// Layout is: a state mark, which agent and which project, then the state or the
+/// activity line, then a count-up of seconds since the status was observed. The
+/// age is always on screen so staleness is visible directly rather than inferred
+/// from a tuned threshold.
 final class SessionRowView: NSView {
+    private let indicator: StateIndicatorView
     private let nameLabel = Style.label("", font: Style.rowFont, color: Style.primary)
     private let detailLabel = Style.label("", font: Style.detailFont, color: Style.secondary)
     private let ageLabel = Style.label("", font: Style.detailFont, color: Style.secondary)
@@ -15,6 +16,7 @@ final class SessionRowView: NSView {
 
     init(session: AgentSession) {
         self.session = session
+        indicator = StateIndicatorView(state: session.state)
         super.init(frame: .zero)
 
         ageLabel.alignment = .right
@@ -23,12 +25,26 @@ final class SessionRowView: NSView {
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        let top = NSStackView(views: [nameLabel, ageLabel])
+        let top = NSStackView(views: [indicator, nameLabel, ageLabel])
         top.orientation = .horizontal
         top.distribution = .fill
-        top.spacing = 8
+        top.alignment = .centerY
+        top.spacing = 6
+        NSLayoutConstraint.activate([
+            indicator.widthAnchor.constraint(equalToConstant: StateIndicatorView.size),
+            indicator.heightAnchor.constraint(equalToConstant: StateIndicatorView.size),
+        ])
 
-        let stack = NSStackView(views: [top, detailLabel])
+        // The detail line hangs under the project name rather than under the
+        // mark, so the mark stays the only thing in the row's left margin and
+        // reads as a column down the surface when several sessions are live.
+        let detailRow = NSStackView(views: [detailLabel])
+        detailRow.orientation = .horizontal
+        detailRow.edgeInsets = NSEdgeInsets(
+            top: 0, left: StateIndicatorView.size + 6, bottom: 0, right: 0
+        )
+
+        let stack = NSStackView(views: [top, detailRow])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 1
@@ -40,6 +56,7 @@ final class SessionRowView: NSView {
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
             top.widthAnchor.constraint(equalTo: stack.widthAnchor),
+            detailRow.widthAnchor.constraint(equalTo: stack.widthAnchor),
         ])
 
         apply(session)
@@ -49,10 +66,17 @@ final class SessionRowView: NSView {
 
     func apply(_ session: AgentSession) {
         self.session = session
+        indicator.apply(session.state)
         nameLabel.attributedStringValue = title(for: session)
         nameLabel.toolTip = session.projectPath
         detailLabel.stringValue = detailText(for: session)
         refreshAge()
+    }
+
+    /// One frame of the surface's one-second clock.
+    func tick() {
+        refreshAge()
+        indicator.advance()
     }
 
     /// Which agent, then which project.
@@ -79,10 +103,17 @@ final class SessionRowView: NSView {
     /// yet there is nothing honest to say, so it simply says `working`. An idle
     /// session never shows the last thing it did — a stale activity line reads as
     /// busy at a glance, which is the failure the pet exists to prevent.
+    ///
+    /// Waiting and errored both arrive with their line already composed by the
+    /// core: the agent's own words for what it is blocked on, or the status code
+    /// it stopped with. Neither is invented here, and neither falls back to
+    /// something more confident than the core was able to say.
     private func detailText(for session: AgentSession) -> String {
         switch session.state {
         case .working: return (session.activity ?? "Working").sentenceCased
         case .idle: return "Idle"
+        case .waiting: return (session.activity ?? "Waiting for you").sentenceCased
+        case .errored: return (session.activity ?? "Errored").sentenceCased
         case .unknown: return "State unknown"
         }
     }

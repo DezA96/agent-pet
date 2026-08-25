@@ -3,7 +3,7 @@ pub mod transcript;
 
 use crate::adapter::Adapter;
 use crate::procs::ProcessTable;
-use crate::session::{now_ms, AgentSession, State};
+use crate::session::{now_ms, truncate_activity, AgentSession, State};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -104,21 +104,58 @@ impl Adapter for ClaudeAdapter {
             }
             seen.push(entry.session_id.clone());
 
-            let state = match entry.status.as_deref() {
+            let status = entry.status.as_deref();
+            let state = match status {
                 Some("busy") => State::Working,
                 Some("idle") => State::Idle,
-                // Never inferred. A session whose state cannot be read says so.
+                Some("waiting") => State::Waiting,
+                // Shell mode is not an attention state: the user is driving a
+                // shell inside the session, nothing is wrong and nothing is
+                // wanted from them. Closer to working than to the `Unknown` it
+                // used to fall into.
+                Some("shell") => State::Working,
+                // Never inferred. A session whose state cannot be read says so,
+                // including a status this build has never heard of.
                 _ => State::Unknown,
             };
 
-            // Only a working session gets an activity line: the transcript's last
-            // tool call goes stale the moment the session stops, and an idle row
-            // showing the last thing it did would read as busy at a glance.
-            let activity = if state == State::Working {
-                self.transcript_path(&profile, &entry.session_id, &entry.cwd)
-                    .and_then(|p| self.tailer.activity(&p))
-            } else {
+            let transcript = self.transcript_path(&profile, &entry.session_id, &entry.cwd);
+
+            // An error only counts while it is still the newest thing in the
+            // transcript *and* the session is not busy. Either half alone is
+            // wrong: a busy session is one that hit an error and carried on, and
+            // an older error is one it already recovered from. Together they
+            // separate "died on an error" from "hit one and kept going", which is
+            // the distinction the row has to get right — a surface that lights up
+            // for every retried blip is one the user learns to ignore.
+            let failure = if status == Some("busy") {
                 None
+            } else {
+                transcript
+                    .as_ref()
+                    .and_then(|p| self.tailer.error(p))
+            };
+
+            let (state, activity) = match (failure, state) {
+                (Some(err), _) => (State::Errored, Some(err.line())),
+                // The agent's own wording for what it is blocked on.
+                (None, State::Waiting) => (
+                    State::Waiting,
+                    entry
+                        .waiting_for
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(truncate_activity),
+                ),
+                // Only a working session gets an activity line: the transcript's
+                // last tool call goes stale the moment the session stops, and an
+                // idle row showing the last thing it did would read as busy.
+                (None, State::Working) => (
+                    State::Working,
+                    transcript.as_ref().and_then(|p| self.tailer.activity(p)),
+                ),
+                (None, other) => (other, None),
             };
 
             out.push(AgentSession {
@@ -302,6 +339,178 @@ mod tests {
         let procs = table(&[(109, "Mon Aug 24 04:00:00 2026")]);
         let out = ClaudeAdapter::new().live_sessions(&[a.clone(), a], &procs);
         assert_eq!(out.len(), 1);
+    }
+
+    /// Write a transcript for a session, so error and activity tests share one setup.
+    fn write_transcript(profile: &Path, cwd: &str, session_id: &str, lines: &[&str]) {
+        let dir = profile.join("projects").join(slug(cwd));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{session_id}.jsonl")),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+    }
+
+    // One line each: a transcript is JSONL, and a fixture that wraps would be read
+    // as several unparseable fragments rather than one entry.
+    const API_ERROR_529: &str = r#"{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":529,"error":"server_error","message":{"role":"assistant","content":[{"type":"text","text":"API Error: 529 Overloaded."}]}}"#;
+    const API_ERROR_NO_CODE: &str =
+        r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","content":[]}}"#;
+    const ORDINARY_REPLY: &str =
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}"#;
+
+    /// One live session with a chosen status and transcript, reduced to its row.
+    fn row_for(name: &str, status: &str, transcript: &[&str]) -> AgentSession {
+        let p = profile(name);
+        let cwd = "/Users/x/errs";
+        let extra = format!(r#","entrypoint":"cli","status":"{status}""#);
+        write_session(&p, 500, "sess-e", cwd, "Mon Aug 24 04:00:00 2026", &extra);
+        if !transcript.is_empty() {
+            write_transcript(&p, cwd, "sess-e", transcript);
+        }
+        let procs = table(&[(500, "Mon Aug 24 04:00:00 2026")]);
+        let mut out = ClaudeAdapter::new().live_sessions(&[p], &procs);
+        assert_eq!(out.len(), 1, "expected exactly one row");
+        out.remove(0)
+    }
+
+    #[test]
+    fn a_waiting_session_is_waiting_not_unknown() {
+        // The bug this story exists to fix: `waiting` fell into the catch-all and
+        // a session sitting on a permission prompt read as "state unknown".
+        let a = profile("dir-waiting");
+        write_session(
+            &a,
+            300,
+            "sess-wait",
+            "/Users/x/mu",
+            "Mon Aug 24 04:00:00 2026",
+            r#","entrypoint":"cli","status":"waiting","waitingFor":"input needed""#,
+        );
+        let procs = table(&[(300, "Mon Aug 24 04:00:00 2026")]);
+        let out = ClaudeAdapter::new().live_sessions(&[a], &procs);
+        assert_eq!(out[0].state, State::Waiting);
+        assert_eq!(out[0].activity.as_deref(), Some("input needed"));
+    }
+
+    #[test]
+    fn a_waiting_session_without_a_reason_still_waits() {
+        let a = profile("dir-waiting-bare");
+        write_session(
+            &a,
+            301,
+            "sess-wb",
+            "/Users/x/nu",
+            "Mon Aug 24 04:00:00 2026",
+            r#","entrypoint":"cli","status":"waiting""#,
+        );
+        let procs = table(&[(301, "Mon Aug 24 04:00:00 2026")]);
+        let out = ClaudeAdapter::new().live_sessions(&[a], &procs);
+        assert_eq!(out[0].state, State::Waiting);
+        assert_eq!(out[0].activity, None);
+    }
+
+    #[test]
+    fn shell_mode_is_working_rather_than_unknown() {
+        // Nothing is wrong and nothing is wanted from the user, so it must not
+        // sit in the attention vocabulary — nor in the unknown bucket.
+        let a = profile("dir-shell");
+        write_session(
+            &a,
+            302,
+            "sess-sh",
+            "/Users/x/xi",
+            "Mon Aug 24 04:00:00 2026",
+            r#","entrypoint":"cli","status":"shell""#,
+        );
+        let procs = table(&[(302, "Mon Aug 24 04:00:00 2026")]);
+        let out = ClaudeAdapter::new().live_sessions(&[a], &procs);
+        assert_eq!(out[0].state, State::Working);
+    }
+
+    #[test]
+    fn a_status_this_build_has_never_heard_of_is_still_unknown() {
+        let a = profile("dir-future");
+        write_session(
+            &a,
+            303,
+            "sess-f",
+            "/Users/x/omicron",
+            "Mon Aug 24 04:00:00 2026",
+            r#","entrypoint":"cli","status":"hibernating""#,
+        );
+        let procs = table(&[(303, "Mon Aug 24 04:00:00 2026")]);
+        let out = ClaudeAdapter::new().live_sessions(&[a], &procs);
+        assert_eq!(out[0].state, State::Unknown);
+    }
+
+    #[test]
+    fn a_session_that_died_on_an_error_is_errored() {
+        let row = row_for("dir-err-died", "idle", &[ORDINARY_REPLY, API_ERROR_529]);
+        assert_eq!(row.state, State::Errored);
+        assert_eq!(row.activity.as_deref(), Some("Error: 529"));
+    }
+
+    #[test]
+    fn an_error_without_a_status_code_still_reports_errored() {
+        let row = row_for("dir-err-nocode", "idle", &[API_ERROR_NO_CODE]);
+        assert_eq!(row.state, State::Errored);
+        assert_eq!(row.activity.as_deref(), Some("Errored"));
+    }
+
+    #[test]
+    fn an_error_the_session_carried_on_past_is_not_errored() {
+        // Append-only transcripts keep every error forever. Only the newest entry
+        // decides, or a session would stay marked dead for the rest of its life.
+        let row = row_for("dir-err-past", "idle", &[API_ERROR_529, ORDINARY_REPLY]);
+        assert_eq!(row.state, State::Idle);
+        assert_eq!(row.activity, None);
+    }
+
+    #[test]
+    fn a_busy_session_is_never_errored_even_with_a_trailing_error() {
+        // Busy means the agent is already retrying through it.
+        let row = row_for("dir-err-busy", "busy", &[API_ERROR_529]);
+        assert_eq!(row.state, State::Working);
+    }
+
+    #[test]
+    fn transcript_bookkeeping_does_not_clear_a_real_error() {
+        // Snapshots and titles are written constantly and say nothing about
+        // whether the session recovered.
+        let row = row_for(
+            "dir-err-noise",
+            "idle",
+            &[
+                API_ERROR_529,
+                r#"{"type":"file-history-snapshot","snapshot":{}}"#,
+                r#"{"type":"ai-title","aiTitle":"something"}"#,
+            ],
+        );
+        assert_eq!(row.state, State::Errored);
+    }
+
+    #[test]
+    fn a_failed_tool_result_is_not_a_session_error() {
+        // All sixteen in this project's transcripts are auto-mode classifier
+        // denials the agent worked around.
+        let row = row_for(
+            "dir-err-tool",
+            "idle",
+            &[
+                r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","is_error":true,"content":"Permission denied by classifier"}]}}"#,
+            ],
+        );
+        assert_eq!(row.state, State::Idle);
+    }
+
+    #[test]
+    fn an_errored_session_keeps_its_row() {
+        // The process is still alive; hiding it would hide the error.
+        let row = row_for("dir-err-visible", "idle", &[API_ERROR_529]);
+        assert_eq!(row.display_name, "errs");
+        assert_eq!(row.agent_id, "claude");
     }
 
     #[test]

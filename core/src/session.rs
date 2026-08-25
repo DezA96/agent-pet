@@ -5,13 +5,34 @@ use serde::Serialize;
 /// `Unknown` is a real, reportable state — never a placeholder to be resolved
 /// into `Working` or `Idle` by inference. If an adapter cannot read a session's
 /// working state, it says so.
+///
+/// `Waiting` and `Errored` are the two states that want something from the user;
+/// the other three do not. That split, rather than the number of variants, is
+/// what the surface draws: only these two move.
+///
+/// `Waiting` is deliberately not the same as `Idle`. An idle session finished its
+/// turn cleanly and costs nothing to leave alone; a waiting one is blocked
+/// mid-turn and will sit there until the user answers. Collapsing them would
+/// leave every completed session demanding attention, which is how an ambient
+/// surface turns into noise.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum State {
     Working,
     Idle,
+    /// Blocked mid-turn on something only the user can answer.
+    Waiting,
+    /// The session stopped on an error it did not recover from.
+    Errored,
     #[default]
     Unknown,
+}
+
+impl State {
+    /// Whether this state wants something from the user.
+    pub fn wants_attention(self) -> bool {
+        matches!(self, State::Waiting | State::Errored)
+    }
 }
 
 /// One live agent session, already reduced to what the pet draws.
@@ -30,7 +51,10 @@ pub struct AgentSession {
     /// What to show as the project, disambiguated if another row collides.
     pub display_name: String,
     pub state: State,
-    /// Very short description of current activity. Present only while `Working`.
+    /// Very short line under the project name, whenever the state has something
+    /// specific to add: what a working session is doing, what a waiting one is
+    /// blocked on, which code an errored one stopped with. `Idle` and `Unknown`
+    /// have nothing to add and leave it empty rather than showing stale text.
     pub activity: Option<String>,
     /// When this observation was taken, unix ms. The pet counts up from here.
     pub observed_at: u64,

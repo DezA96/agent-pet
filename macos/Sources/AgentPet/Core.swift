@@ -6,12 +6,19 @@ import Foundation
 /// by guessing. Any value the core sends that this build does not recognise also
 /// lands here rather than being silently treated as idle.
 enum SessionState: String, Decodable {
-    case working, idle, unknown
+    case working, idle, waiting, errored, unknown
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = SessionState(rawValue: raw) ?? .unknown
     }
+
+    /// Whether this state wants something from the user.
+    ///
+    /// The whole visual vocabulary hangs off this one question: these two states
+    /// move, the rest are still, so movement anywhere on the surface always means
+    /// something is asking for the user rather than merely reporting.
+    var wantsAttention: Bool { self == .waiting || self == .errored }
 }
 
 struct AgentSession: Decodable, Equatable {

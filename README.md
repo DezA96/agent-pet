@@ -12,19 +12,46 @@ One row per live session: which agent, the project, what that session is current
 doing, and how many seconds ago that was observed.
 
 ```
-Claude agent-agnostic-pet             1s
-Reading backlog.md
+● Claude agent-agnostic-pet           1s
+  Reading backlog.md
 
-Codex agent-agnostic-pet              4s
-Inspecting SSH configs and hosts
+● Codex agent-agnostic-pet            4s
+  Inspecting SSH configs and hosts
 
-Claude claude-code-experimental       1s
-Idle
+▶ Claude claude-code-experimental    36s
+  Bash command approval
+
+✕ Claude margin-release              2m 4s
+  Error: 529
+
+○ Claude scratch-experiments          1s
+  Idle
 ```
 
 Two sessions in the same project get a short suffix, because the name a session derives
 for itself is not unique. The agent's name is drawn from whatever the adapter reports,
 so the surface holds no list of agents.
+
+Each row opens with a mark that carries its state, so a glance answers "does anything
+need me?" without reading a word:
+
+| | |
+|---|---|
+| ● filled disc | working — the line beneath says what it is doing |
+| ○ hollow ring | idle — finished its turn, costing nothing to leave alone |
+| ▶ orange triangle | waiting on you, in the agent's own words (`input needed`, `dialog open`) |
+| ✕ red cross | stopped on an error it did not recover from, with the status code where there is one |
+| ◇ hollow diamond | state could not be read — never guessed |
+
+Shape carries the state and colour only reinforces it: the surface is translucent over
+whatever window is behind it, so no colour holds its contrast, and colour alone is
+unreadable to anyone who cannot separate red from green. **Only the two states that want
+something from you move.** Waiting and errored pulse once a second, on the same timer the
+age counters already run on; everything else is still, so any movement means you are
+needed. Waiting is deliberately not idle — an idle session finished cleanly, a waiting one
+is blocked mid-turn and stays that way until you answer.
+
+Attention states are Claude Code only. Codex publishes nothing about them — see below.
 
 Three situations replace the list rather than showing rows:
 
@@ -66,10 +93,17 @@ agent proves it differently, and each proof stays inside that agent's adapter.
 
 **Claude Code** publishes a registry file per session:
 
-- `<profile>/sessions/<pid>.json` — which sessions exist, their project, and whether
-  they are busy or idle.
+- `<profile>/sessions/<pid>.json` — which sessions exist, their project, and their status:
+  `busy`, `idle`, `waiting` (with a `waitingFor` reason) or `shell`. Shell mode counts as
+  working: nothing is wrong and nothing is wanted from you.
 - `<profile>/projects/<slug>/<sessionId>.jsonl` — read forward from where it last
   stopped, for the activity line.
+
+An error is read from the transcript, where the agent writes `isApiErrorMessage` with an
+`apiErrorStatus`. It counts only while it is still the newest entry *and* the session is
+not busy — a busy session is one that hit an error and carried on, and an older error is
+one it already recovered from. Failed `tool_result`s are not session errors; the agent
+routinely works around them.
 
 A session counts as live only when its registry file exists, the process it names is
 running, **and** that process's start time matches the one recorded in the file. The
@@ -91,6 +125,15 @@ keeps scanning backward for one rather than reporting an unknown state.
 A session whose most recent turn boundary cannot be found reads `state unknown` — never
 guessed as idle or working. A Codex session that has taken no turn yet has written no
 rollout, so it has nothing to show and no row until its first turn.
+
+**Codex has no attention states, and this was tested rather than assumed.** Its protocol
+defines `exec_approval_request`, `apply_patch_approval_request` and friends, but a real
+session driven to a genuine approval prompt wrote *nothing* to its rollout for the whole
+fifteen seconds it sat blocked — the file holds no approval or error event of any kind. A
+waiting Codex session is byte-for-byte indistinguishable from one running a slow command.
+Telling them apart would need a timeout on an unanswered tool call, which would fire on
+every long build, so Codex sessions stay `working`, `idle` or `state unknown`. A blocked
+one reads `working`, which is incomplete but not false: it is genuinely mid-turn.
 
 Nothing is hooked, injected, or configured in any agent, no agent-owned file is ever
 written, and nothing observed leaves the machine.

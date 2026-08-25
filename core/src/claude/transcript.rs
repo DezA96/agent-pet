@@ -13,6 +13,36 @@ use std::path::{Path, PathBuf};
 pub struct Tailer {
     offsets: HashMap<PathBuf, u64>,
     last_activity: HashMap<PathBuf, String>,
+    /// Whether the newest substantive entry in each transcript was an API error.
+    ///
+    /// Held as "the newest one, whatever it was" rather than "an error was seen",
+    /// because a transcript is append-only: an error the agent retried through
+    /// stays in the file forever, and a state that latched on first sight would
+    /// mark a healthy session dead for the rest of its life.
+    last_error: HashMap<PathBuf, Option<ApiError>>,
+}
+
+/// An API error exactly as the agent recorded it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiError {
+    /// The HTTP status the agent recorded, where it recorded one.
+    pub status: Option<u64>,
+}
+
+impl ApiError {
+    /// The line shown under the project name.
+    ///
+    /// The status code is passed through as fact and never interpreted. Observed
+    /// live: a `429` that was a hard session limit ("resets 11:30pm"), not a rate
+    /// limit to wait out — so the pet reports the number and lets the user judge.
+    /// The agent's own error prose is deliberately not used: it is operator
+    /// diagnostics aimed at a log, and this surface is not one.
+    pub fn line(&self) -> String {
+        match self.status {
+            Some(code) => format!("Error: {code}"),
+            None => "Errored".to_string(),
+        }
+    }
 }
 
 impl Tailer {
@@ -26,8 +56,24 @@ impl Tailer {
     /// A session that just started has no tool activity, and its row must still
     /// render — so "nothing yet" is an ordinary answer, not a failure.
     pub fn activity(&mut self, path: &Path) -> Option<String> {
+        self.scan(path);
+        self.last_activity.get(path).cloned()
+    }
+
+    /// The API error the transcript ended on, or `None` if it did not.
+    ///
+    /// Separate from `activity` because the two are wanted in different states: a
+    /// row asks for activity only while working, but must ask about errors
+    /// whatever the registry says.
+    pub fn error(&mut self, path: &Path) -> Option<ApiError> {
+        self.scan(path);
+        self.last_error.get(path).cloned().flatten()
+    }
+
+    /// Read whatever is new in this transcript and update both derived values.
+    fn scan(&mut self, path: &Path) {
         let Ok(mut file) = std::fs::File::open(path) else {
-            return self.last_activity.get(path).cloned();
+            return;
         };
         let len = file.metadata().map(|m| m.len()).unwrap_or(0);
         let mut offset = self.offsets.get(path).copied().unwrap_or(0);
@@ -36,17 +82,18 @@ impl Tailer {
         if offset > len {
             offset = 0;
             self.last_activity.remove(path);
+            self.last_error.remove(path);
         }
         if offset == len {
-            return self.last_activity.get(path).cloned();
+            return;
         }
         if file.seek(SeekFrom::Start(offset)).is_err() {
-            return self.last_activity.get(path).cloned();
+            return;
         }
 
         let mut buf = Vec::new();
         if file.read_to_end(&mut buf).is_err() {
-            return self.last_activity.get(path).cloned();
+            return;
         }
         let text = String::from_utf8_lossy(&buf);
 
@@ -59,21 +106,51 @@ impl Tailer {
             if let Some(a) = activity_in_line(line) {
                 self.last_activity.insert(path.to_path_buf(), a);
             }
+            // Every substantive entry overwrites the verdict, so an error is only
+            // reported while it is still the last thing the session managed to do.
+            if let Some(verdict) = error_in_line(line) {
+                self.last_error.insert(path.to_path_buf(), verdict);
+            }
         }
         self.offsets
             .insert(path.to_path_buf(), offset + complete_upto as u64);
-        self.last_activity.get(path).cloned()
     }
 
     pub fn forget(&mut self, path: &Path) {
         self.offsets.remove(path);
         self.last_activity.remove(path);
+        self.last_error.remove(path);
     }
 
     pub fn retain_only(&mut self, keep: &[PathBuf]) {
         self.offsets.retain(|k, _| keep.contains(k));
         self.last_activity.retain(|k, _| keep.contains(k));
+        self.last_error.retain(|k, _| keep.contains(k));
     }
+}
+
+/// Read one transcript line as a verdict on whether the session is in error.
+///
+/// Returns `None` for lines that say nothing either way — the transcript is full
+/// of bookkeeping (`file-history-snapshot`, `mode`, `ai-title`, attachments) that
+/// must not clear an error the session has not actually recovered from.
+///
+/// `tool_result` failures are deliberately not errors. All sixteen in this
+/// project's transcripts are auto-mode classifier denials that the agent worked
+/// around and kept going; treating them as session errors would light the surface
+/// up for something already handled.
+fn error_in_line(line: &str) -> Option<Option<ApiError>> {
+    let v: Value = serde_json::from_str(line.trim()).ok()?;
+    match v.get("type").and_then(Value::as_str)? {
+        "assistant" | "user" => {}
+        _ => return None,
+    }
+    if v.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true) {
+        return Some(None);
+    }
+    Some(Some(ApiError {
+        status: v.get("apiErrorStatus").and_then(Value::as_u64),
+    }))
 }
 
 /// Pull the last tool call out of one transcript line, if it holds one.
