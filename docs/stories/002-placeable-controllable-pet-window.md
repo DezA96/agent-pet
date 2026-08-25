@@ -53,8 +53,10 @@ corner of my screen.
   dock icon that starts invisible is indistinguishable from one that failed to launch.
 - Per-display position memory. One remembered position, in global screen coordinates.
 - Resizing the pet (C-010, Candidate).
-- Correcting the status age to count from `statusUpdatedAt` (C-017). Same release, its own story — an
-  observation-core change with nothing to do with window placement.
+- Correcting the status age to count from `statusUpdatedAt` (C-017). An observation-core change with
+  nothing to do with window placement. Named here as in-release during this story's build but never
+  recorded anywhere; now a Candidate in `docs/backlog.md` with no target release, since story 001's
+  criterion asks for seconds since the status was *observed*, which the shipped code satisfies.
 - Replacing the `ps` subprocess calls in `core/src/procs.rs` with native process APIs. Measured at
   30 ms per poll, ~1.5% of one core at the 2-second interval; only worth doing if the release's
   "CPU and battery impact are not noticeable" measure actually fails.
