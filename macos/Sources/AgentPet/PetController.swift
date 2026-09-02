@@ -305,6 +305,12 @@ final class PetController: NSObject {
     /// remaining screen by the time this runs, which is why the creature is so
     /// often exactly where it was and only the bubble moves.
     private func revalidatePlacement() {
+        // macOS has usually moved the window itself before this runs, and a window
+        // moving under a pointer that is not moving is exactly the case no mouse
+        // event reports. Re-decide first, because both paths below can return
+        // without ever reaching `setFrame`.
+        updateClickThrough()
+
         let creature = currentCreature
         guard isRestorable(creature, on: screens) else {
             side = defaultSide

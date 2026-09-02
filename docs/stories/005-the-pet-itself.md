@@ -54,7 +54,13 @@ across every live session, before I read a single row.
   instead and the unusable position is not kept. The bubble's visibility is not part of the test.
 - Given the pet has never been moved, when it launches, then the creature sits at the top-right of the
   display holding the menu bar, clear of its edges, under the bubble's right corner.
-- Given the remembered side no longer fits at launch, then the side that fits is used and remembered.
+- Given the remembered side no longer fits at launch, then the side that fits is used from that tick
+  on, and nothing is written. The fitting side is recomputed from the creature's position at every
+  launch, so a stale remembered side costs one comparison and never reaches what is shown; it is
+  written down the next time a drag writes anything. (Settled at the build's alignment round: as
+  first written this criterion said "used and remembered", which contradicted the rule below that
+  only a drag writes. Displaying the fitting side is what the criterion was for, and that needs no
+  write.)
 - Given any programmatic move — launch placement, growth by a row, a side flip, a display-change
   rescue — then nothing is written to the remembered position. Only a drag writes it.
 
@@ -267,14 +273,12 @@ across every live session, before I read a single row.
 14. Manual: motion — captures a fraction of a second apart show the creature's rhythm matching the most
     urgent dot's; three 90-second CPU samples as in story 004, under 2% of one core.
 15. Manual: show/hide from the menu bar hides and shows the creature with the bubble.
-16. Open defect, found by the third review round and **not fixed**: on a display change macOS
-    relocates the window itself, and where the creature is still restorable and the side does not
-    change, `revalidatePlacement` returns early without re-deciding what a click means
-    (`macos/Sources/AgentPet/PetController.swift:306-320`). With the pointer motionless across that
-    relocation, a click can go the wrong way until the pointer next moves. Same class as the defect
-    fixed in `391ad6c`, and narrower: it needs a display reconfiguration *and* a still pointer. The
-    fix is one `updateClickThrough()` before the early returns; it is left for the developer to
-    direct, since the review loop stopped at three rounds.
+16. Manual: with the pointer resting still and not moved afterwards, change the display
+    configuration so macOS relocates the window, then click where the pointer already is — whatever is
+    under it now, bubble or gap, is what the click should hit. The case the third review round found:
+    both of `revalidatePlacement`'s early returns could leave the click rule deciding against the old
+    frame. `updateClickThrough()` now runs before them; this check is what confirms it, since a
+    display change is not something the synthetic-click rig can stage.
 
 ## Design Requirement
 - Design: none — routine work following an existing pattern. AppKit and Core Animation on a surface
