@@ -208,5 +208,7 @@ across every live session, before I read a single row.
   and its sleep, before build. It does not need to be finished work: the developer's call is that a
   proper vector creature is too much for this story (C-022), and the prototype only has to show that
   five expressions and sleep are distinguishable at 56 points. Its answer is recorded here when it has
-  run. Not yet run.
+  run. Built on `prototype/creature` (run with `macos/Prototypes/creature.sh`): three bodies, Blob,
+  Critter and Figure, each with the six expressions under a mock of the real bubble. Awaiting the
+  developer's verdict; no answer recorded yet.
 - Decision: none. Nothing here is hard to reverse.
