@@ -222,6 +222,15 @@ across every live session, before I read a single row.
    the creature waits; end the blocked session and it works; end the working one and it is idle. An
    errored session staged as in story 004 (a transcript ending in an `isApiErrorMessage`, anchored to a
    real live PID) makes the creature errored above all of them.
+      - Method: developer observation
+      - Observed: passed. Staged with `tools/stage-sessions.sh`, which holds a working, an idle, a
+        waiting and an errored session against real detached processes and their real `procStart`, so
+        the liveness rule was satisfied rather than bypassed; the errored one is story 004's technique,
+        a transcript ending in `isApiErrorMessage` with `apiErrorStatus: 529`. The creature showed
+        errored above all four, then stepped to waiting and to working as each was killed. Two findings
+        came out of it, neither a defect in this story: the working face was misread on sight as
+        miserable rather than busy, and the sleeping creature's Zs are unreadable over a dark
+        background. Both are recorded against C-022, which owns the drawing.
 8. Manual: with every session stopped the bubble reads `No agents running` and the creature sleeps;
    with a malformed config the bubble reads `Sessions unreadable` and the creature shows unknown, then
    recovers when the config is removed.
