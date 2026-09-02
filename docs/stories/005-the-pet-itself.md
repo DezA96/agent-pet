@@ -161,19 +161,57 @@ across every live session, before I read a single row.
 1. Unit (swift-testing, `./test.sh`): side selection — a bubble that fits on its current side stays
    there; one that would cross the left edge flips to the creature's right; one that would cross the
    right edge flips to its left; with room on both sides the current side is kept.
+      - Method: run
+      - Observed: `./test.sh` — 42 swift-testing tests pass. `bubbleSide` in
+        `macos/Sources/PetGeometry/PetGeometry.swift:113`; the four cases are
+        `aBubbleThatStillFitsStaysOnTheSideItIsOn`, `aBubbleThatWouldCrossTheLeftEdgeFlips…`,
+        `…CrossTheRightEdgeFlips…`, plus `theFlipIsDrivenByTheEdgeAndNotByTheMidpoint`, which pins the
+        rule to the screen edge rather than the midpoint, and
+        `aScreenTooNarrowForEitherSideKeepsTheSideItIsOn`.
 2. Unit (swift-testing): the frame rebuilt from a creature position, side and anchor — a flip moves the
    frame's x by the bubble width less the creature width and leaves the creature's rect unchanged; the
    frame's top holds under a top anchor and the creature's bottom under a bottom anchor.
+      - Method: run
+      - Observed: `aFlipMovesTheFrameButNotTheCreature` asserts the x shift is exactly
+        `bubbleWidth - creatureWidth` and that the creature's rect is unchanged either side of the
+        flip; `aTopAnchoredSurfaceHoldsItsTopAndCarriesTheCreatureDown` and
+        `aBottomAnchoredSurfaceHoldsTheCreatureAndGrowsTheBubbleUpward` cover the two anchors.
 3. Unit (swift-testing): validity on the creature — a creature fully on screen is kept; one with less
    than 40x40 points on any screen is rejected even when the bubble would be visible; a creature half
    off an edge is kept.
+      - Method: run
+      - Observed: validity is applied to the creature's rect, not the frame
+        (`PetGeometry.swift:230`). `aCreatureIsKeptEvenWhereItsBubbleWouldHangOffTheEdge` is the case
+        the criterion turns on; `aPositionShowingLessThanTheMinimumIsNotRestored`,
+        `aPetDeliberatelyTuckedAgainstAnEdgeIsRestored` and
+        `twoSliversOnTwoDisplaysDoNotAddUpToAVisiblePet` carry over from story 002 unchanged.
 4. Unit (swift-testing): deriving a creature position from a story 002 frame — the creature lands under
    the corner on the side that fits, and where both fit, under the right corner.
+      - Method: run
+      - Observed: the check as written could not fail, and the plan was wrong rather than the code. The
+        bubble is exactly as wide as story 002's whole frame, so the creature under the left corner and
+        under the right corner put the bubble in *the same place* — "the side that fits" can never
+        discriminate. The derivation is therefore the right corner outright
+        (`PetGeometry.swift:255`), which reproduces the old frame, and the side is re-picked afterwards
+        by the launch rule. Covered by
+        `aLegacyFrameLeavesTheCreatureUnderItsRightCornerWithTheBubbleWhereItWas` and
+        `aLegacyFrameTuckedOffTheLeftEdgeHasItsSideRepickedOnTheWayIn`, the second being the case where
+        story 002 had parked the pet mostly off-screen.
 5. Unit (swift-testing): the aggregate — over any mix of states the most urgent wins in the order
    errored, waiting, working, unknown, idle; an all-unknown list is unknown, not idle; an empty list has
    no aggregate.
+      - Method: run
+      - Observed: `aggregate` in `macos/Sources/PetState/SessionState.swift:62`.
+        `urgencyIsAStrictOrderWhicheverWayTheListIsBuilt` checks every ordered pair in both list
+        orders, so discovery order cannot affect the result;
+        `anUnreadableSurfaceIsNeverReportedAsFinished` pins unknown above idle;
+        `noSessionsHasNoAggregate` returns nil, which the surface renders as the sleeping creature
+        rather than as idle.
 6. Unit (Rust, unchanged): `cargo test --manifest-path core/Cargo.toml` still passes, since the core is
    untouched.
+      - Method: run
+      - Observed: 104 Rust tests pass, 0 failed. `git diff main...HEAD -- core/` is empty: the core,
+        the FFI contract and the session payload are untouched, as the story said they would be.
 7. Manual, against real sessions: with a working, an idle and a permission-blocked Claude session live,
    the creature waits; end the blocked session and it works; end the working one and it is idle. An
    errored session staged as in story 004 (a transcript ending in an `isApiErrorMessage`, anchored to a
@@ -183,13 +221,44 @@ across every live session, before I read a single row.
    recovers when the config is removed.
 9. Manual: drag the creature toward the left edge — the bubble flips live and the creature stays under
    the pointer; drag back toward the right and it flips back only when it would cross the right edge.
+      - Method: run
+      - Observed: met mechanically rather than by hand, by posting real events through the window
+        server (`CGEvent`, `.leftMouseDown` → 20 `.leftMouseDragged` → `.leftMouseUp`). Dragging from
+        screen x 930 to 250 moved `petCreatureX` from 900 to 220 — exactly the 680 points dragged, so
+        the creature stayed under the pointer throughout — and `petBubbleSide` went from `left` to
+        `right` as the bubble reached the screen edge. An earlier drag of 530 points that did *not*
+        reach the edge left the side at `left`, which is the half of the criterion that says it flips
+        only when it must. **Whether the flip reads as live rather than as a snap is not settled by
+        this** and still wants a person's eye.
 10. Manual: a press on the bubble moves nothing and does not reach the window beneath; a press in the
     transparent gap reaches the window beneath; a press on the creature drags; throughout, the
     frontmost app stays frontmost.
+      - Method: run
+      - Observed: met mechanically, with a TextEdit window parked under the pet and each probe
+        interleaved with a control click on that window clear of the pet (every control activated
+        TextEdit, so the rig is known to work). Results: a click in the transparent band beside the
+        creature reaches the window beneath; so does a click in the empty part of the tail band; a
+        click on the bubble body, on the creature, and on the drawn tail all do not, and none of the
+        three changed the frontmost app. This check found the story's one substantive defect — the gap
+        swallowed clicks — and then disproved the obvious fix: with a `hitTest` override returning nil
+        the click *still* failed to reach the window beneath, because the window consumes the event
+        regardless. `ignoresMouseEvents`, toggled from the pointer's position, is what does it.
+        **Not covered**: a click with the pointer already at rest when the bubble grows over it, which
+        is the residual case in check 16 below.
 11. Manual: quit and relaunch — the creature and the bubble's side come back as left; with story 002's
     keys only (delete the new keys with `defaults delete`), the creature appears where the old frame's
     corner was and the new keys are written; `defaults read gg.deza.agent-pet` shows no write on any
     programmatic move.
+      - Method: run
+      - Observed: partly. Relaunch restores: the pet was parked by writing `petCreatureX`,
+        `petPositionEdgeY`, `petPositionAnchor` and `petBubbleSide`, relaunched, and appeared at
+        exactly the parked frame (measured off a screen capture: creature at x 900–964, frame x
+        664–964, bottom edge at y 400, all as computed). No write on a programmatic move: story 002's
+        `petPositionX` read 1425 before and after launch placement, several polls, a resize and two
+        side flips, and was never rewritten; the new keys changed only on a drag's mouse-up.
+        **Not covered**: the migration path itself — launching with story 002's keys only, after
+        `defaults delete` of the new ones — which is still worth running by hand, since it is the one
+        path that writes without a drag.
 12. Manual: rows added and removed with the pet in the upper half, then the lower half — top edge holds
     and the creature descends; bottom edge holds and the creature stays.
 13. Manual: with an external display connected, park the pet where the bubble extends onto it, then
@@ -198,6 +267,14 @@ across every live session, before I read a single row.
 14. Manual: motion — captures a fraction of a second apart show the creature's rhythm matching the most
     urgent dot's; three 90-second CPU samples as in story 004, under 2% of one core.
 15. Manual: show/hide from the menu bar hides and shows the creature with the bubble.
+16. Open defect, found by the third review round and **not fixed**: on a display change macOS
+    relocates the window itself, and where the creature is still restorable and the side does not
+    change, `revalidatePlacement` returns early without re-deciding what a click means
+    (`macos/Sources/AgentPet/PetController.swift:306-320`). With the pointer motionless across that
+    relocation, a click can go the wrong way until the pointer next moves. Same class as the defect
+    fixed in `391ad6c`, and narrower: it needs a display reconfiguration *and* a still pointer. The
+    fix is one `updateClickThrough()` before the early returns; it is left for the developer to
+    direct, since the review loop stopped at three rounds.
 
 ## Design Requirement
 - Design: none — routine work following an existing pattern. AppKit and Core Animation on a surface
