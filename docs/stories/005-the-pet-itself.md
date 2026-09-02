@@ -293,10 +293,13 @@ across every live session, before I read a single row.
         the top of the screen, leaving a creature whose rows cannot be read. Not a failure of this
         check or of any criterion — this story says in as many words that there is no vertical flip,
         and story 002 recorded that parking the pet mostly off-screen is a choice rather than a fault.
-        Recorded as C-025, because the vertical case is worse than the horizontal one it mirrors:
-        sideways, the side rule recovers by itself, while upward there is no rule at all and the
-        launch validity test looks at the creature, which is still perfectly on screen — so a bubble
-        parked off the top stays off the top across every relaunch until the user drags it back.
+        Put to the developer with the observation that the vertical case has no recovery where the
+        horizontal one does — sideways the side rule fixes itself, while upward there is no rule and
+        the launch validity test asks only whether the creature is on screen, which it is, so a bubble
+        parked off the top survives every relaunch until it is dragged back. **Confirmed deliberate**:
+        the pet goes where it is put, and being able to tuck it away is the same choice story 002
+        made. No row was kept. Recorded here so the next person to notice it finds it already settled
+        rather than raising it again.
 13. Manual: with an external display connected, park the pet where the bubble extends onto it, then
     disconnect — the bubble re-picks a side on the remaining screen and the creature is where macOS or
     the validity rule left it, per the edge case.
