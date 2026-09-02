@@ -18,7 +18,10 @@ mkdir -p "$FIXTURE/sessions"
 stage() {
   local name="$1" status="$2" extra="$3" transcript="$4"
   local cwd="/Users/staged/$name"
-  sleep 100000 &
+  # Detached, so the held process outlives this script rather than being hung up
+  # with it — a session that quietly dies mid-check is worse than no fixture.
+  nohup sleep 100000 >/dev/null 2>&1 &
+  disown 2>/dev/null || true
   local pid=$!
   local start
   start="$(TZ=UTC ps -o lstart= -p "$pid" | sed 's/^ *//;s/ *$//')"
