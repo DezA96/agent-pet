@@ -54,6 +54,8 @@ final class PetController: NSObject {
     private var side = defaultSide
     /// Where the creature was when the current drag began.
     private var dragOrigin: CGRect?
+    /// Held so the monitors outlive this call and can be torn down with the pet.
+    private var pointerMonitors: [Any?] = []
 
     override init() {
         panel = PetPanel(contentRect: NSRect(
@@ -112,6 +114,8 @@ final class PetController: NSObject {
         discoveryTimer = discovery
         startDisplayClock()
 
+        watchPointerForClickThrough()
+
         // A display disconnected or resized can strand the pet where no screen
         // reaches, or leave the bubble hanging off the edge of the one that is
         // left. Same rules as launch, so the two cannot drift apart.
@@ -159,6 +163,59 @@ final class PetController: NSObject {
         displayTimer = nil
     }
 
+    // MARK: - What a click lands on
+
+    /// The parts of the surface that are actually drawn.
+    ///
+    /// The bubble's solid part stops above the tail band, which is transparent
+    /// apart from the tail itself; the creature's whole box counts, which is more
+    /// forgiving to grab than its outline and costs only the corners of a
+    /// 64-point square.
+    private var solidRegions: [NSRect] {
+        [
+            creatureView.frame,
+            bubble.frame.divided(atDistance: BubbleView.tail, from: .minYEdge).remainder,
+        ]
+    }
+
+    /// Let clicks through the empty band beside the creature.
+    ///
+    /// A 300-point bubble with a 64-point creature under one corner leaves a wide
+    /// transparent gap, and the pet floats over the user's actual work: swallowing
+    /// clicks where they can see the window underneath is the trap story 001 hit,
+    /// in a new place. What is *drawn* still catches its own clicks — the bubble
+    /// consumes them and does nothing, the creature drags.
+    ///
+    /// `ignoresMouseEvents` is the only thing that actually does this. Declining
+    /// the point in `hitTest` looks like it should and does not: the window still
+    /// consumes the event, it simply has no view to hand it to. Measured, not
+    /// assumed — a synthetic click in the gap left the window beneath untouched
+    /// with a `hitTest` override in place.
+    ///
+    /// Two monitors because each is blind to what the other sees: the global one
+    /// misses events delivered to this app, the local one misses everything while
+    /// the panel is ignoring events. Together they cover the pointer wherever it is.
+    private func watchPointerForClickThrough() {
+        panel.acceptsMouseMovedEvents = true
+        pointerMonitors = [
+            NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
+                self?.updateClickThrough()
+            },
+            NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+                self?.updateClickThrough()
+                return event
+            },
+        ]
+        updateClickThrough()
+    }
+
+    private func updateClickThrough() {
+        let pointer = panel.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let overSomethingDrawn = solidRegions.contains { $0.contains(pointer) }
+        guard panel.ignoresMouseEvents == overSomethingDrawn else { return }
+        panel.ignoresMouseEvents = !overSomethingDrawn
+    }
+
     // MARK: - Placement
 
     private var screens: [NSRect] { NSScreen.screens.map(\.visibleFrame) }
@@ -200,8 +257,16 @@ final class PetController: NSObject {
         side = target.side
         setFrame(target.frame)
         // The one write that is not a drag: story 002's position, restated under
-        // the new keys so the old one is never consulted again.
-        if migrated?.fromLegacyKeys == true { savePosition() }
+        // the new keys so the old one is never consulted again. What is written is
+        // what was migrated, with the side that was actually taken — not a fresh
+        // reading of the frame, which would re-derive the anchored edge from a
+        // surface whose height has changed since story 002 wrote it and could quietly
+        // flip a top-anchored pet to the bottom.
+        if let migrated, migrated.fromLegacyKeys {
+            var position = migrated.position
+            position.side = target.side
+            write(position)
+        }
     }
 
     /// A display change re-picks the bubble's side and, only where the creature
@@ -280,13 +345,21 @@ final class PetController: NSObject {
         bubble.pointTail(at: creature.midX)
     }
 
-    private func savePosition() {
-        let position = stored(
+    /// Where the pet is now, reduced to what gets remembered.
+    private func currentPosition() -> StoredPosition {
+        stored(
             panel.frame,
             side: side,
             creatureSize: CreatureView.size,
             in: screen(nearest: panel.frame)
         )
+    }
+
+    private func savePosition() {
+        write(currentPosition())
+    }
+
+    private func write(_ position: StoredPosition) {
         let defaults = UserDefaults.standard
         defaults.set(Double(position.x), forKey: Key.creatureX)
         defaults.set(Double(position.edgeY), forKey: Key.edgeY)

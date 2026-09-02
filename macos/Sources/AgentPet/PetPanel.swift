@@ -64,8 +64,16 @@ final class BubbleView: NSVisualEffectView {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// What the current mask was drawn for. Layout runs on every poll, but the
+    /// bubble only changes shape when a row appears or the tail changes corner —
+    /// redrawing an identical mask into a fresh `NSImage` twice a second would be
+    /// new per-second work in a surface whose whole point is that it has almost none.
+    private var maskedFor: (size: NSSize, tipX: CGFloat)?
+
     /// Point the tail at `tipX`, in this view's own coordinates.
     func pointTail(at tipX: CGFloat) {
+        if let maskedFor, maskedFor.size == frame.size, maskedFor.tipX == tipX { return }
+        maskedFor = (frame.size, tipX)
         let tail = Self.tail, half = Self.halfWidth, radius = Self.radius
         maskImage = NSImage(size: frame.size, flipped: false) { rect in
             let body = NSBezierPath(
