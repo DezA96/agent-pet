@@ -208,7 +208,16 @@ across every live session, before I read a single row.
   and its sleep, before build. It does not need to be finished work: the developer's call is that a
   proper vector creature is too much for this story (C-022), and the prototype only has to show that
   five expressions and sleep are distinguishable at 56 points. Its answer is recorded here when it has
-  run. Built on `prototype/creature` (run with `macos/Prototypes/creature.sh`): three bodies, Blob,
-  Critter and Figure, each with the six expressions under a mock of the real bubble. Awaiting the
-  developer's verdict; no answer recorded yet.
+  run. **Answer: the Blob.** A dome with two nub feet, drawn at 48 points tall in a 56-point box so
+  its tallest pose still clears the bubble's tail, with a shared face vocabulary: half-lidded eyes
+  and a flat mouth for working; wide ringed eyes with raised brows and an open mouth, stretched
+  taller, for waiting; crossed eyes, a wavy mouth and a squash for errored; hollow rings, the dot's
+  own mark, with a head tilt and one raised brow for unknown; happy closed eyes and a smile for idle;
+  eyes shut, slumped, with two Zs for asleep. Filled in the window background colour and outlined in
+  the label colour, so it holds as a solid shape over whatever it floats above. The five expressions
+  and the sleep were judged distinguishable at that size. The developer picked it over a cat with
+  ears and tail (Critter) and an upright figure with arms (Figure); all three stay on
+  `prototype/creature`, run with `macos/Prototypes/creature.sh`. Left open by the prototype: whether
+  the breath is carried by opacity, as the dot's is, or by a squash, since at the urgent floor a
+  creature over a busy wallpaper nearly vanishes; the prototype's `b` key compares them.
 - Decision: none. Nothing here is hard to reverse.
