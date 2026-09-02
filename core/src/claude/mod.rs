@@ -7,12 +7,20 @@ use crate::session::{now_ms, truncate_activity, AgentSession, State};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Entrypoints that register a process but never become an observable session.
+/// The entrypoints this release can actually report on.
 ///
-/// The VS Code extension registers once, publishes no `status`, writes no
-/// transcript, and does not appear in peer enumeration — a live process that
-/// cannot be reported on. Release 001 targets the CLI.
-const UNOBSERVABLE_ENTRYPOINTS: &[&str] = &["claude-vscode"];
+/// An allowlist, not a list of exclusions. It started as the latter, naming the
+/// VS Code extension alone, and that is precisely how `claude-desktop` came to be
+/// shown: the desktop app registers a process, publishes no `status` and writes no
+/// transcript, exactly as the extension does, but nobody had thought to name it —
+/// so it arrived as a row reading "state unknown" the day the app started writing
+/// registry files. A list of what is known to work cannot fail that way. A new
+/// entrypoint is invisible until someone teaches the pet to read it, which is the
+/// safe direction: a session the pet cannot report on is worse than absent,
+/// because it looks like a session in trouble.
+///
+/// Release 001 targets the CLI, which is why this list has one entry.
+const OBSERVABLE_ENTRYPOINTS: &[&str] = &["cli"];
 
 pub struct ClaudeAdapter {
     tailer: transcript::Tailer,
@@ -75,11 +83,16 @@ impl Adapter for ClaudeAdapter {
         let mut candidates: Vec<(PathBuf, registry::RegistryEntry)> = Vec::new();
         for profile in profiles {
             for entry in registry::read_dir(profile) {
-                let unobservable = entry
-                    .entrypoint
-                    .as_deref()
-                    .is_some_and(|e| UNOBSERVABLE_ENTRYPOINTS.contains(&e));
-                if unobservable {
+                let observable = match entry.entrypoint.as_deref() {
+                    // No entrypoint at all predates the field, from when the CLI
+                    // was the only thing writing these files. Left observable so
+                    // the allowlist cannot hide a real session on an older agent:
+                    // the defect being fixed is named entrypoints slipping in, not
+                    // unnamed ones.
+                    None => true,
+                    Some(e) => OBSERVABLE_ENTRYPOINTS.contains(&e),
+                };
+                if !observable {
                     continue;
                 }
                 candidates.push((profile.clone(), entry));
@@ -285,6 +298,37 @@ mod tests {
         write_session(&a, 105, "sess-vs", "/Users/x/eta", "Mon Aug 24 04:00:00 2026", r#","entrypoint":"claude-vscode""#);
         let procs = table(&[(105, "Mon Aug 24 04:00:00 2026")]);
         assert!(ClaudeAdapter::new().live_sessions(&[a], &procs).is_empty());
+    }
+
+    #[test]
+    fn desktop_app_sessions_are_not_shown_even_when_live() {
+        // Observed live: the Claude desktop app writes `entrypoint: "claude-desktop"`
+        // and no `status`, so before this it arrived as a row reading "state unknown".
+        let a = profile("dir-desktop");
+        write_session(&a, 110, "sess-desk", "/Users/x/mu", "Mon Aug 24 04:00:00 2026", r#","entrypoint":"claude-desktop""#);
+        let procs = table(&[(110, "Mon Aug 24 04:00:00 2026")]);
+        assert!(ClaudeAdapter::new().live_sessions(&[a], &procs).is_empty());
+    }
+
+    #[test]
+    fn an_entrypoint_this_release_does_not_know_is_not_shown() {
+        // The point of an allowlist: the next entrypoint nobody has heard of yet
+        // stays out until it is taught, rather than arriving as an unreadable row.
+        let a = profile("dir-future");
+        write_session(&a, 111, "sess-future", "/Users/x/nu", "Mon Aug 24 04:00:00 2026", r#","entrypoint":"claude-something-new","status":"busy""#);
+        let procs = table(&[(111, "Mon Aug 24 04:00:00 2026")]);
+        assert!(ClaudeAdapter::new().live_sessions(&[a], &procs).is_empty());
+    }
+
+    #[test]
+    fn a_session_with_no_entrypoint_at_all_is_still_shown() {
+        // Older agents wrote no entrypoint. The allowlist must not hide those.
+        let a = profile("dir-noentry");
+        write_session(&a, 112, "sess-old", "/Users/x/xi", "Mon Aug 24 04:00:00 2026", r#","status":"busy""#);
+        let procs = table(&[(112, "Mon Aug 24 04:00:00 2026")]);
+        let out = ClaudeAdapter::new().live_sessions(&[a], &procs);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, State::Working);
     }
 
     #[test]
