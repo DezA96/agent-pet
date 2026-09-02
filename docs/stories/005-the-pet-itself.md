@@ -286,12 +286,26 @@ across every live session, before I read a single row.
         path that writes without a drag.
 12. Manual: rows added and removed with the pet in the upper half, then the lower half — top edge holds
     and the creature descends; bottom edge holds and the creature stays.
+      - Method: developer observation
+      - Observed: passed as written — at the top of the screen the frame's top edge held and the
+        creature descended as sessions opened. It also turned up a gap the criteria do not cover, and
+        the developer flagged it while passing the check: nothing stops a drag pushing the bubble off
+        the top of the screen, leaving a creature whose rows cannot be read. Not a failure of this
+        check or of any criterion — this story says in as many words that there is no vertical flip,
+        and story 002 recorded that parking the pet mostly off-screen is a choice rather than a fault.
+        Recorded as C-025, because the vertical case is worse than the horizontal one it mirrors:
+        sideways, the side rule recovers by itself, while upward there is no rule at all and the
+        launch validity test looks at the creature, which is still perfectly on screen — so a bubble
+        parked off the top stays off the top across every relaunch until the user drags it back.
 13. Manual: with an external display connected, park the pet where the bubble extends onto it, then
     disconnect — the bubble re-picks a side on the remaining screen and the creature is where macOS or
     the validity rule left it, per the edge case.
 14. Manual: motion — captures a fraction of a second apart show the creature's rhythm matching the most
     urgent dot's; three 90-second CPU samples as in story 004, under 2% of one core.
 15. Manual: show/hide from the menu bar hides and shows the creature with the bubble.
+      - Method: developer observation
+      - Observed: passed. Hiding and showing from the menu bar takes the whole surface, creature
+        included; nothing is shown or left behind on its own.
 16. Manual: with the pointer resting still and not moved afterwards, change the display
     configuration so macOS relocates the window, then click where the pointer already is — whatever is
     under it now, bubble or gap, is what the click should hit. The case the third review round found:
