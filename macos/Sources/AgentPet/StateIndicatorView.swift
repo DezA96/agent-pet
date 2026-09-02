@@ -87,21 +87,7 @@ final class StateIndicatorView: NSView {
         }
         CATransaction.commit()
 
-        setBreathing(breath(for: state))
-    }
-
-    /// How hard this state breathes, or `nil` for the states that hold still.
-    ///
-    /// The urgent pair is both faster and deeper than working, which is what keeps
-    /// motion a real signal now that shape no longer distinguishes anything: a
-    /// glance can tell a busy agent from one that is stuck without resolving the
-    /// colour at all.
-    private func breath(for state: SessionState) -> (period: Double, floor: Float)? {
-        switch state {
-        case .working: return (2.4, 0.55)
-        case .waiting, .errored: return (1.1, 0.28)
-        case .idle, .unknown: return nil
-        }
+        setBreathing(state.breath)
     }
 
     private func setBreathing(_ breath: (period: Double, floor: Float)?) {

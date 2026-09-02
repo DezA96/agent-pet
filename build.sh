@@ -38,6 +38,7 @@ swiftc -O \
   -import-objc-header "$ROOT/macos/bridge/agentpet.h" \
   "$ROOT"/macos/Sources/AgentPet/*.swift \
   "$ROOT"/macos/Sources/PetGeometry/*.swift \
+  "$ROOT"/macos/Sources/PetState/*.swift \
   -L "$ROOT/core/target/release" -lagentpet_core \
   -o "$APP/Contents/MacOS/AgentPet"
 

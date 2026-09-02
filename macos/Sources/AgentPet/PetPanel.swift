@@ -38,19 +38,50 @@ final class PetPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Makes the whole surface a drag handle.
+/// The speech bubble: the rows, with a tail pointing down at the creature.
 ///
-/// `isMovableByWindowBackground` is the usual one-liner, but it only works where
-/// the view under the pointer agrees to pass the click on, and the status rows
-/// are `NSTextField`s, which do not. A transparent layer over everything is
-/// predictable instead of heuristic: every point of the pet drags, and there is
-/// nothing underneath that wants clicks anyway.
+/// It catches its own clicks and does nothing with them. Passing them through
+/// would put it back in the trap story 001 hit — it floats over controls the user
+/// cannot see — and making it a drag handle would mean a press on a row moved the
+/// pet, which is not what a row is for. The creature is the handle; the bubble is
+/// a thing to read. What a click on a row *should* eventually do is C-021.
 ///
-/// `performDrag` also keeps the focus guarantee intact — it moves the window
-/// without activating the app.
-final class DragOverlayView: NSView {
-    override func mouseDown(with event: NSEvent) {
-        window?.performDrag(with: event)
+/// The tail is cut into the material with a mask rather than drawn on top of it,
+/// so the blur, the corner radius and the tail are one shape and the tail carries
+/// the same background as the body.
+final class BubbleView: NSVisualEffectView {
+    /// How far the tail hangs below the bubble's body, toward the creature.
+    static let tail: CGFloat = 8
+    private static let radius: CGFloat = 10
+    private static let halfWidth: CGFloat = 9
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        material = .hudWindow
+        blendingMode = .behindWindow
+        state = .active
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    /// Point the tail at `tipX`, in this view's own coordinates.
+    func pointTail(at tipX: CGFloat) {
+        let tail = Self.tail, half = Self.halfWidth, radius = Self.radius
+        maskImage = NSImage(size: frame.size, flipped: false) { rect in
+            let body = NSBezierPath(
+                roundedRect: CGRect(x: 0, y: tail, width: rect.width, height: rect.height - tail),
+                xRadius: radius,
+                yRadius: radius
+            )
+            // Meeting the body a point above its edge, so the join has no seam.
+            body.move(to: CGPoint(x: tipX - half, y: tail + 1))
+            body.line(to: CGPoint(x: tipX, y: 0))
+            body.line(to: CGPoint(x: tipX + half, y: tail + 1))
+            body.close()
+            NSColor.black.setFill()
+            body.fill()
+            return true
+        }
     }
 }
 
@@ -72,6 +103,8 @@ enum Style {
     static let primary = NSColor.labelColor
     static let secondary = NSColor.secondaryLabelColor
     static let padding: CGFloat = 12
+    /// The bubble's width, which is the whole surface's width: the creature tucks
+    /// under one of its corners rather than sitting beside it.
     static let width: CGFloat = 300
 
     static func label(_ text: String, font: NSFont, color: NSColor) -> NSTextField {

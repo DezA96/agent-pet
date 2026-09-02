@@ -8,6 +8,13 @@ import Testing
 private let screen = CGRect(x: 0, y: 0, width: 1440, height: 875)
 private let petSize = CGSize(width: 300, height: 84)
 
+/// The creature's box, the bubble's width, and a bubble of a couple of rows plus
+/// its tail — the sizes the surface is actually laid out from.
+private let creature = CGSize(width: 64, height: 56)
+private let bubbleWidth: CGFloat = 300
+private let bubbleHeight: CGFloat = 92
+private let totalHeight = creature.height + bubbleHeight
+
 // MARK: - Which edge stays put
 
 @Test func aPetInTheUpperHalfAnchorsToItsTopEdge() {
@@ -53,19 +60,38 @@ private let petSize = CGSize(width: 300, height: 84)
 
 @Test func aTopAnchoredPetComesBackAtTheSameTopEdgeWhenItsHeightChanged() {
     // Quit showing two sessions, relaunch showing none.
-    let atQuit = CGRect(x: 1124, y: 691, width: 300, height: 168)
-    let remembered = stored(atQuit, in: screen)
-    let atLaunch = frame(for: remembered, size: CGSize(width: 300, height: 60))
+    let atQuit = CGRect(x: 1124, y: 691, width: bubbleWidth, height: totalHeight)
+    let remembered = stored(atQuit, side: .left, creatureSize: creature, in: screen)
+    let atLaunch = frame(
+        for: remembered,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: 40
+    )
     #expect(atLaunch.maxY == atQuit.maxY)
     #expect(atLaunch.minX == atQuit.minX)
 }
 
 @Test func aBottomAnchoredPetComesBackAtTheSameBottomEdgeWhenItsHeightChanged() {
-    let atQuit = CGRect(x: 40, y: 16, width: 300, height: 168)
-    let remembered = stored(atQuit, in: screen)
-    let atLaunch = frame(for: remembered, size: CGSize(width: 300, height: 60))
+    let atQuit = CGRect(x: 40, y: 16, width: bubbleWidth, height: totalHeight)
+    let remembered = stored(atQuit, side: .right, creatureSize: creature, in: screen)
+    let atLaunch = frame(
+        for: remembered,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: 40
+    )
     #expect(atLaunch.minY == atQuit.minY)
     #expect(atLaunch.minX == atQuit.minX)
+}
+
+@Test func whatIsRememberedIsTheCreatureNotTheFrame() {
+    // The frame's left edge and the creature's are the same point only when the
+    // bubble runs right. Remembering the frame would move the creature on any
+    // relaunch that picked the other side.
+    let f = CGRect(x: 400, y: 300, width: bubbleWidth, height: totalHeight)
+    #expect(stored(f, side: .left, creatureSize: creature, in: screen).x == f.maxX - creature.width)
+    #expect(stored(f, side: .right, creatureSize: creature, in: screen).x == f.minX)
 }
 
 // MARK: - Is a remembered position still usable
@@ -117,19 +143,186 @@ private let petSize = CGSize(width: 300, height: 84)
 }
 
 @Test func aPetThatHasNeverBeenMovedStartsAtTheDefault() {
-    let f = placement(remembered: nil, size: petSize, visibleFrames: [screen], primary: screen)
-    #expect(f == defaultFrame(size: petSize, in: screen))
+    let placed = placement(
+        remembered: nil,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.frame == defaultFrame(size: CGSize(width: bubbleWidth, height: totalHeight), in: screen))
+    // Top-right of the screen, so the creature sits under the bubble's right
+    // corner and the bubble runs left away from the edge.
+    #expect(placed.side == .left)
+    #expect(creatureRect(in: placed.frame, side: placed.side, size: creature).maxX
+        == screen.maxX - defaultInset)
 }
 
 @Test func anUnusableRememberedPositionFallsBackToTheDefault() {
-    let stranded = StoredPosition(x: 3000, edgeY: 800, anchor: .top)
-    let f = placement(remembered: stranded, size: petSize, visibleFrames: [screen], primary: screen)
-    #expect(f == defaultFrame(size: petSize, in: screen))
+    let stranded = StoredPosition(x: 3000, edgeY: 800, anchor: .top, side: .left)
+    let placed = placement(
+        remembered: stranded,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.frame == defaultFrame(size: CGSize(width: bubbleWidth, height: totalHeight), in: screen))
 }
 
 @Test func aUsableRememberedPositionIsHonoured() {
-    let remembered = StoredPosition(x: 200, edgeY: 500, anchor: .top)
-    let f = placement(remembered: remembered, size: petSize, visibleFrames: [screen], primary: screen)
-    #expect(f.minX == 200)
-    #expect(f.maxY == 500)
+    let remembered = StoredPosition(x: 1000, edgeY: 500, anchor: .top, side: .left)
+    let placed = placement(
+        remembered: remembered,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.side == .left)
+    #expect(placed.frame.maxY == 500)
+    #expect(creatureRect(in: placed.frame, side: placed.side, size: creature).minX == 1000)
+}
+
+@Test func aRememberedSideThatNoLongerFitsIsRepickedWithoutMovingTheCreature() {
+    // Left-hand edge of the screen: the bubble can only run right from here.
+    let remembered = StoredPosition(x: 20, edgeY: 500, anchor: .top, side: .left)
+    let placed = placement(
+        remembered: remembered,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.side == .right)
+    #expect(creatureRect(in: placed.frame, side: placed.side, size: creature).minX == 20)
+}
+
+@Test func aCreatureIsKeptEvenWhereItsBubbleWouldHangOffTheEdge() {
+    // Validity is judged on the creature, never on the frame: a bubble over an
+    // edge is something the side rule fixes, not a reason to throw a reachable
+    // creature back to the top-right.
+    let remembered = StoredPosition(x: 0, edgeY: 500, anchor: .top, side: .left)
+    let placed = placement(
+        remembered: remembered,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.frame != defaultFrame(size: CGSize(width: bubbleWidth, height: totalHeight), in: screen))
+}
+
+// MARK: - Which side the bubble takes
+
+private func creatureAt(_ x: CGFloat, _ y: CGFloat = 400) -> CGRect {
+    CGRect(x: x, y: y, width: creature.width, height: creature.height)
+}
+
+@Test func aBubbleThatStillFitsStaysOnTheSideItIsOn() {
+    // Room on both sides: the pet must not twitch as it crosses the middle.
+    let middle = creatureAt(700)
+    #expect(bubbleSide(creature: middle, current: .left, bubbleWidth: bubbleWidth, in: screen) == .left)
+    #expect(bubbleSide(creature: middle, current: .right, bubbleWidth: bubbleWidth, in: screen) == .right)
+}
+
+@Test func aBubbleThatWouldCrossTheLeftEdgeFlipsToTheCreaturesRight() {
+    let nearLeft = creatureAt(10)
+    #expect(bubbleSide(creature: nearLeft, current: .left, bubbleWidth: bubbleWidth, in: screen) == .right)
+}
+
+@Test func aBubbleThatWouldCrossTheRightEdgeFlipsToTheCreaturesLeft() {
+    let nearRight = creatureAt(screen.maxX - creature.width - 10)
+    #expect(bubbleSide(creature: nearRight, current: .right, bubbleWidth: bubbleWidth, in: screen) == .left)
+}
+
+@Test func theFlipIsDrivenByTheEdgeAndNotByTheMidpoint() {
+    // Just past the middle, running toward the far edge and still fitting: the
+    // rule that switches at the midpoint would flip here, and this one must not.
+    let pastTheMiddle = creatureAt(screen.midX + 1)
+    #expect(bubbleSide(creature: pastTheMiddle, current: .right, bubbleWidth: bubbleWidth, in: screen) == .right)
+}
+
+@Test func aScreenTooNarrowForEitherSideKeepsTheSideItIsOn() {
+    // No display this pet runs on is this narrow, but oscillating would be worse
+    // than sitting still if one were.
+    let narrow = CGRect(x: 0, y: 0, width: 200, height: 875)
+    let middle = CGRect(x: 68, y: 400, width: creature.width, height: creature.height)
+    #expect(bubbleSide(creature: middle, current: .left, bubbleWidth: bubbleWidth, in: narrow) == .left)
+    #expect(bubbleSide(creature: middle, current: .right, bubbleWidth: bubbleWidth, in: narrow) == .right)
+}
+
+// MARK: - The frame built around a creature
+
+@Test func aFlipMovesTheFrameButNotTheCreature() {
+    let c = creatureAt(700)
+    let runningLeft = petFrame(creature: c, side: .left, bubbleWidth: bubbleWidth, bubbleHeight: bubbleHeight)
+    let runningRight = petFrame(creature: c, side: .right, bubbleWidth: bubbleWidth, bubbleHeight: bubbleHeight)
+    #expect(runningRight.minX - runningLeft.minX == bubbleWidth - creature.width)
+    #expect(creatureRect(in: runningLeft, side: .left, size: creature) == c)
+    #expect(creatureRect(in: runningRight, side: .right, size: creature) == c)
+}
+
+@Test func theFrameIsTheBubbleWideAndTheTwoOfThemTall() {
+    let f = petFrame(creature: creatureAt(700), side: .left, bubbleWidth: bubbleWidth, bubbleHeight: bubbleHeight)
+    #expect(f.width == bubbleWidth)
+    #expect(f.height == totalHeight)
+}
+
+@Test func aTopAnchoredSurfaceHoldsItsTopAndCarriesTheCreatureDown() {
+    // A row appears: the bubble's top stays where the user put it and the
+    // creature descends with the bubble's bottom.
+    let before = petFrame(creature: creatureAt(700, 400), side: .left, bubbleWidth: bubbleWidth, bubbleHeight: bubbleHeight)
+    let after = resized(before, to: CGSize(width: bubbleWidth, height: totalHeight + 30), anchoredAt: .top)
+    #expect(after.maxY == before.maxY)
+    #expect(creatureRect(in: after, side: .left, size: creature).minY
+        == creatureRect(in: before, side: .left, size: creature).minY - 30)
+}
+
+@Test func aBottomAnchoredSurfaceHoldsTheCreatureAndGrowsTheBubbleUpward() {
+    let before = petFrame(creature: creatureAt(700, 20), side: .left, bubbleWidth: bubbleWidth, bubbleHeight: bubbleHeight)
+    let after = resized(before, to: CGSize(width: bubbleWidth, height: totalHeight + 30), anchoredAt: .bottom)
+    #expect(creatureRect(in: after, side: .left, size: creature) == creatureRect(in: before, side: .left, size: creature))
+    #expect(after.maxY == before.maxY + 30)
+}
+
+// MARK: - Coming from story 002's keys
+
+@Test func aLegacyFrameLeavesTheCreatureUnderItsRightCornerWithTheBubbleWhereItWas() {
+    let legacy = CGRect(x: 600, y: 400, width: bubbleWidth, height: totalHeight)
+    let derived = derivedCreature(fromLegacyFrame: legacy, creatureWidth: creature.width)
+    #expect(derived.side == .left)
+    #expect(derived.x == legacy.maxX - creature.width)
+    // The whole point of the right corner: the bubble does not appear to move.
+    #expect(petFrame(
+        creature: CGRect(x: derived.x, y: legacy.minY, width: creature.width, height: creature.height),
+        side: derived.side,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight
+    ).minX == legacy.minX)
+}
+
+@Test func aLegacyFrameTuckedOffTheLeftEdgeHasItsSideRepickedOnTheWayIn() {
+    // Story 002 let the pet be parked mostly off-screen, so its bubble can arrive
+    // somewhere the new one will not fit. The creature still lands under the old
+    // right corner; the launch rule is what moves the bubble to the other side.
+    let legacy = CGRect(x: -160, y: 400, width: bubbleWidth, height: totalHeight)
+    let derived = derivedCreature(fromLegacyFrame: legacy, creatureWidth: creature.width)
+    #expect(derived.x == legacy.maxX - creature.width)
+
+    let placed = placement(
+        remembered: StoredPosition(x: derived.x, edgeY: 500, anchor: .top, side: derived.side),
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.side == .right)
+    #expect(creatureRect(in: placed.frame, side: placed.side, size: creature).minX == derived.x)
 }

@@ -6,7 +6,14 @@ import AppKit
 /// to advance the age counters. Polling rather than watching the filesystem is
 /// deliberate: a force-killed session changes no file on disk, so only an active
 /// check notices it has gone.
-final class PetController: NSObject, NSWindowDelegate {
+///
+/// The surface is a creature with the rows in a bubble above it. The window's
+/// frame is both together, and the creature is the fixed point: the bubble hangs
+/// off whichever side of it fits, and every move — a drag, a row appearing, a
+/// display going away — is expressed as *where the creature is and which way the
+/// bubble runs*, then turned into a frame by `PetGeometry`. Keeping one direction
+/// of derivation is what stops the two halves drifting apart.
+final class PetController: NSObject {
     private static let discoveryInterval: TimeInterval = 2
     private static let displayInterval: TimeInterval = 1
 
@@ -14,13 +21,25 @@ final class PetController: NSObject, NSWindowDelegate {
     /// geometry is a macOS surface concern the observation core has no business
     /// knowing, and that file is hand-edited — an app that writes to it can
     /// clobber what the user typed.
+    ///
+    /// `edgeY` and `anchor` are story 002's keys and still mean what they meant:
+    /// the frame's top under a top anchor, its bottom under a bottom one. Only
+    /// `legacyFrameX` changed meaning — it was the frame's left edge, which is now
+    /// the creature's only when the bubble happens to run right — so it is
+    /// replaced by `creatureX` rather than reinterpreted in place, read once to
+    /// migrate and then left alone forever.
     private enum Key {
-        static let x = "petPositionX"
+        static let creatureX = "petCreatureX"
+        static let side = "petBubbleSide"
         static let edgeY = "petPositionEdgeY"
         static let anchor = "petPositionAnchor"
+        static let legacyFrameX = "petPositionX"
     }
 
     private let panel: PetPanel
+    private let content = NSView()
+    private let bubble = BubbleView(frame: .zero)
+    private let creatureView = CreatureView()
     private let container = NSStackView()
     private let statusLabel = Style.label("", font: Style.detailFont, color: Style.secondary)
     private var rows: [String: SessionRowView] = [:]
@@ -28,47 +47,47 @@ final class PetController: NSObject, NSWindowDelegate {
     private var displayTimer: Timer?
     private var menuBar: MenuBarController?
     private var isShowing = true
-    /// Set while the controller is moving the panel itself, so its own placement
-    /// is not mistaken for the user dragging.
-    private var isPlacing = false
+
+    /// Which way the bubble currently runs from the creature. Held here rather
+    /// than read back off the frame, because a frame alone cannot say which end
+    /// the creature is at.
+    private var side = defaultSide
+    /// Where the creature was when the current drag began.
+    private var dragOrigin: CGRect?
 
     override init() {
-        panel = PetPanel(contentRect: NSRect(x: 0, y: 0, width: Style.width, height: 60))
+        panel = PetPanel(contentRect: NSRect(
+            x: 0,
+            y: 0,
+            width: Style.width,
+            height: CreatureView.size.height + 60
+        ))
         super.init()
-
-        let backdrop = NSVisualEffectView()
-        backdrop.material = .hudWindow
-        backdrop.blendingMode = .behindWindow
-        backdrop.state = .active
-        backdrop.wantsLayer = true
-        backdrop.layer?.cornerRadius = 10
-        backdrop.layer?.masksToBounds = true
 
         container.orientation = .vertical
         container.alignment = .leading
         container.spacing = 8
         container.translatesAutoresizingMaskIntoConstraints = false
-        backdrop.addSubview(container)
+        bubble.addSubview(container)
         NSLayoutConstraint.activate([
-            container.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor, constant: Style.padding),
-            container.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor, constant: -Style.padding),
-            container.topAnchor.constraint(equalTo: backdrop.topAnchor, constant: Style.padding),
-            container.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor, constant: -Style.padding),
+            container.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: Style.padding),
+            container.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -Style.padding),
+            container.topAnchor.constraint(equalTo: bubble.topAnchor, constant: Style.padding),
         ])
 
-        // Above the rows, so every point of the pet is a drag handle.
-        let drag = DragOverlayView()
-        drag.translatesAutoresizingMaskIntoConstraints = false
-        backdrop.addSubview(drag)
-        NSLayoutConstraint.activate([
-            drag.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
-            drag.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
-            drag.topAnchor.constraint(equalTo: backdrop.topAnchor),
-            drag.bottomAnchor.constraint(equalTo: backdrop.bottomAnchor),
-        ])
+        content.addSubview(creatureView)
+        content.addSubview(bubble)
+        panel.contentView = content
 
-        panel.contentView = backdrop
-        panel.delegate = self
+        creatureView.onDragBegin = { [weak self] in
+            guard let self else { return }
+            dragOrigin = creatureRect(in: panel.frame, side: side, size: CreatureView.size)
+        }
+        creatureView.onDrag = { [weak self] delta in self?.drag(by: delta) }
+        creatureView.onDragEnd = { [weak self] in
+            self?.dragOrigin = nil
+            self?.savePosition()
+        }
     }
 
     func start() {
@@ -94,7 +113,8 @@ final class PetController: NSObject, NSWindowDelegate {
         startDisplayClock()
 
         // A display disconnected or resized can strand the pet where no screen
-        // reaches. Same rule as launch, so the two cannot drift apart.
+        // reaches, or leave the bubble hanging off the edge of the one that is
+        // left. Same rules as launch, so the two cannot drift apart.
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -141,14 +161,7 @@ final class PetController: NSObject, NSWindowDelegate {
 
     // MARK: - Placement
 
-    /// The screen showing most of the pet, falling back to the main one.
-    private func visibleFrame(nearest frame: NSRect) -> NSRect {
-        let best = NSScreen.screens.max { a, b in
-            overlapArea(frame, a.visibleFrame) < overlapArea(frame, b.visibleFrame)
-        }
-        if let best, overlapArea(frame, best.visibleFrame) > 0 { return best.visibleFrame }
-        return primaryVisibleFrame()
-    }
+    private var screens: [NSRect] { NSScreen.screens.map(\.visibleFrame) }
 
     /// The display holding the menu bar.
     ///
@@ -161,63 +174,164 @@ final class PetController: NSObject, NSWindowDelegate {
         NSScreen.screens.first?.visibleFrame ?? .zero
     }
 
-    private func overlapArea(_ a: NSRect, _ b: NSRect) -> CGFloat {
-        let i = a.intersection(b)
-        return i.isNull ? 0 : i.width * i.height
+    private func screen(nearest rect: NSRect) -> NSRect {
+        nearestVisible(to: rect, among: screens, fallback: primaryVisibleFrame())
+    }
+
+    /// The bubble's height, tail included, at the surface's current frame.
+    private var bubbleHeight: CGFloat { panel.frame.height - CreatureView.size.height }
+
+    private var currentCreature: NSRect {
+        creatureRect(in: panel.frame, side: side, size: CreatureView.size)
     }
 
     private func applyPlacement() {
-        let screens = NSScreen.screens.map(\.visibleFrame)
+        let screens = screens
         let primary = primaryVisibleFrame()
+        let migrated = loadPosition()
         let target = placement(
-            remembered: loadPosition(),
-            size: panel.frame.size,
+            remembered: migrated?.position,
+            creatureSize: CreatureView.size,
+            bubbleWidth: Style.width,
+            bubbleHeight: bubbleHeight,
             visibleFrames: screens,
             primary: primary
         )
-        setFrameWithoutRemembering(target)
+        side = target.side
+        setFrame(target.frame)
+        // The one write that is not a drag: story 002's position, restated under
+        // the new keys so the old one is never consulted again.
+        if migrated?.fromLegacyKeys == true { savePosition() }
     }
 
-    /// Only act when the pet has actually been stranded, so a display change
-    /// never moves a pet the user can still see.
+    /// A display change re-picks the bubble's side and, only where the creature
+    /// itself has been stranded, moves the pet.
+    ///
+    /// The creature is what is tested, not the frame: a bubble hanging off an edge
+    /// is something the side rule fixes on the spot, and throwing a perfectly
+    /// reachable creature back to the top-right over it would move a pet the user
+    /// can still see. AppKit has usually already relocated the window onto a
+    /// remaining screen by the time this runs, which is why the creature is so
+    /// often exactly where it was and only the bubble moves.
     private func revalidatePlacement() {
-        let screens = NSScreen.screens.map(\.visibleFrame)
-        guard !isRestorable(panel.frame, on: screens) else { return }
-        let primary = primaryVisibleFrame()
-        setFrameWithoutRemembering(defaultFrame(size: panel.frame.size, in: primary))
+        let creature = currentCreature
+        guard isRestorable(creature, on: screens) else {
+            side = defaultSide
+            setFrame(defaultFrame(size: panel.frame.size, in: primaryVisibleFrame()))
+            return
+        }
+        let picked = bubbleSide(
+            creature: creature,
+            current: side,
+            bubbleWidth: Style.width,
+            in: screen(nearest: creature)
+        )
+        guard picked != side else { return }
+        side = picked
+        setFrame(petFrame(
+            creature: creature,
+            side: picked,
+            bubbleWidth: Style.width,
+            bubbleHeight: bubbleHeight
+        ))
     }
 
-    private func setFrameWithoutRemembering(_ frame: NSRect) {
-        isPlacing = true
+    /// The creature follows the pointer exactly; the bubble re-picks its side as
+    /// it goes, so it flips live rather than snapping into place on release.
+    private func drag(by delta: CGSize) {
+        guard let dragOrigin else { return }
+        let creature = dragOrigin.offsetBy(dx: delta.width, dy: delta.height)
+        side = bubbleSide(
+            creature: creature,
+            current: side,
+            bubbleWidth: Style.width,
+            in: screen(nearest: creature)
+        )
+        setFrame(petFrame(
+            creature: creature,
+            side: side,
+            bubbleWidth: Style.width,
+            bubbleHeight: bubbleHeight
+        ))
+    }
+
+    /// Every frame change goes through here, so the creature and the bubble are
+    /// never laid out against a frame the window no longer has.
+    private func setFrame(_ frame: NSRect) {
         panel.setFrame(frame, display: true)
-        isPlacing = false
+        layoutSurface()
     }
 
-    func windowDidMove(_ notification: Notification) {
-        guard !isPlacing else { return }
-        savePosition()
+    private func layoutSurface() {
+        let size = panel.frame.size
+        let creature = CGRect(
+            x: side == .left ? size.width - CreatureView.size.width : 0,
+            y: 0,
+            width: CreatureView.size.width,
+            height: CreatureView.size.height
+        )
+        creatureView.frame = creature
+        bubble.frame = CGRect(
+            x: 0,
+            y: CreatureView.size.height,
+            width: size.width,
+            height: size.height - CreatureView.size.height
+        )
+        bubble.pointTail(at: creature.midX)
     }
 
     private func savePosition() {
-        let position = stored(panel.frame, in: visibleFrame(nearest: panel.frame))
+        let position = stored(
+            panel.frame,
+            side: side,
+            creatureSize: CreatureView.size,
+            in: screen(nearest: panel.frame)
+        )
         let defaults = UserDefaults.standard
-        defaults.set(Double(position.x), forKey: Key.x)
+        defaults.set(Double(position.x), forKey: Key.creatureX)
         defaults.set(Double(position.edgeY), forKey: Key.edgeY)
         defaults.set(position.anchor.rawValue, forKey: Key.anchor)
+        defaults.set(position.side.rawValue, forKey: Key.side)
     }
 
     /// Nothing remembered is the normal first run, not an error.
-    private func loadPosition() -> StoredPosition? {
+    private func loadPosition() -> (position: StoredPosition, fromLegacyKeys: Bool)? {
         let defaults = UserDefaults.standard
-        guard defaults.object(forKey: Key.x) != nil,
-              defaults.object(forKey: Key.edgeY) != nil,
-              let raw = defaults.string(forKey: Key.anchor),
-              let anchor = VerticalAnchor(rawValue: raw)
+        guard defaults.object(forKey: Key.edgeY) != nil,
+              let rawAnchor = defaults.string(forKey: Key.anchor),
+              let anchor = VerticalAnchor(rawValue: rawAnchor)
         else { return nil }
-        return StoredPosition(
-            x: CGFloat(defaults.double(forKey: Key.x)),
-            edgeY: CGFloat(defaults.double(forKey: Key.edgeY)),
-            anchor: anchor
+        let edgeY = CGFloat(defaults.double(forKey: Key.edgeY))
+
+        if defaults.object(forKey: Key.creatureX) != nil,
+           let rawSide = defaults.string(forKey: Key.side),
+           let side = BubbleSide(rawValue: rawSide) {
+            return (
+                StoredPosition(
+                    x: CGFloat(defaults.double(forKey: Key.creatureX)),
+                    edgeY: edgeY,
+                    anchor: anchor,
+                    side: side
+                ),
+                false
+            )
+        }
+
+        // Story 002 remembered the bubble alone. Rebuild the frame it described and
+        // put the creature under its right corner, so the bubble lands where the
+        // user last saw it; `placement` re-picks the side if it no longer fits.
+        guard defaults.object(forKey: Key.legacyFrameX) != nil else { return nil }
+        let height = CreatureView.size.height + bubbleHeight
+        let legacy = CGRect(
+            x: CGFloat(defaults.double(forKey: Key.legacyFrameX)),
+            y: anchor == .top ? edgeY - height : edgeY,
+            width: Style.width,
+            height: height
+        )
+        let derived = derivedCreature(fromLegacyFrame: legacy, creatureWidth: CreatureView.size.width)
+        return (
+            StoredPosition(x: derived.x, edgeY: edgeY, anchor: anchor, side: derived.side),
+            true
         )
     }
 
@@ -235,10 +349,13 @@ final class PetController: NSObject, NSWindowDelegate {
                 // Useful to whoever has to fix it, without crowding the surface.
                 FileHandle.standardError.write(Data("agent-pet: discovery failed: \(detail)\n".utf8))
             }
+            // Unknown, not errored: the pet cannot see, and no agent has failed.
+            creatureView.apply(.unknown)
             showMessage("Sessions unreadable")
             return
         }
         guard !poll.sessions.isEmpty else {
+            creatureView.apply(.asleep)
             showMessage("No agents running")
             return
         }
@@ -264,6 +381,12 @@ final class PetController: NSObject, NSWindowDelegate {
                 row.widthAnchor.constraint(equalTo: container.widthAnchor).isActive = true
             }
         }
+
+        // The creature is a function of this poll and nothing else — no memory of
+        // the last one, so a session flapping between states flaps the creature
+        // with it, exactly as its row's dot already does.
+        let states = poll.sessions.map(\.state)
+        creatureView.apply(aggregate(states).map(Expression.init) ?? .asleep)
         resize()
     }
 
@@ -280,12 +403,14 @@ final class PetController: NSObject, NSWindowDelegate {
 
     /// Grow away from whichever edge the pet is sitting against, so rows coming
     /// and going never walk it off the screen and never move the edge the user
-    /// lined it up with.
+    /// lined it up with. Under a top anchor that carries the creature down with
+    /// the bubble's bottom; under a bottom anchor the creature stays exactly where
+    /// it is and the bubble grows upward over it.
     private func resize() {
         container.layoutSubtreeIfNeeded()
-        let height = container.fittingSize.height + Style.padding * 2
-        let size = NSSize(width: Style.width, height: height)
-        let edge = anchor(for: panel.frame, in: visibleFrame(nearest: panel.frame))
-        setFrameWithoutRemembering(resized(panel.frame, to: size, anchoredAt: edge))
+        let bubbleHeight = container.fittingSize.height + Style.padding * 2 + BubbleView.tail
+        let size = NSSize(width: Style.width, height: CreatureView.size.height + bubbleHeight)
+        let edge = anchor(for: panel.frame, in: screen(nearest: panel.frame))
+        setFrame(resized(panel.frame, to: size, anchoredAt: edge))
     }
 }

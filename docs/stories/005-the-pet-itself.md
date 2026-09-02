@@ -5,7 +5,7 @@
 which carries C-013's aggregate expression (absorbed at the spec round of story 004).
 
 ## Status
-Ready
+Implementing
 
 ## User Outcome
 As someone who uses various coding agents, I want the surface to be a creature that reacts to my
@@ -217,7 +217,12 @@ across every live session, before I read a single row.
   the label colour, so it holds as a solid shape over whatever it floats above. The five expressions
   and the sleep were judged distinguishable at that size. The developer picked it over a cat with
   ears and tail (Critter) and an upright figure with arms (Figure); all three stay on
-  `prototype/creature`, run with `macos/Prototypes/creature.sh`. Left open by the prototype: whether
-  the breath is carried by opacity, as the dot's is, or by a squash, since at the urgent floor a
-  creature over a busy wallpaper nearly vanishes; the prototype's `b` key compares them.
+  `prototype/creature`, run with `macos/Prototypes/creature.sh`. The prototype left one question open —
+  whether the breath is carried by opacity, as the dot's is, or by a squash, since at the urgent
+  floor a creature over a busy wallpaper nearly vanishes; its `b` key compares them. **Settled at
+  the build's alignment round: a squash.** It keeps the creature solid at the urgent floor, where
+  opacity nearly loses a line drawing over a busy wallpaper, and while the creature is a placeholder
+  the transform animation is the one worth exercising. The rhythm is unchanged by this: the creature
+  reads the same `(period, floor)` pair the dot does, taking the floor as squash depth rather than
+  as opacity.
 - Decision: none. Nothing here is hard to reverse.
