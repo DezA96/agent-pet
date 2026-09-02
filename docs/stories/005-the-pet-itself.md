@@ -234,6 +234,16 @@ across every live session, before I read a single row.
 8. Manual: with every session stopped the bubble reads `No agents running` and the creature sleeps;
    with a malformed config the bubble reads `Sessions unreadable` and the creature shows unknown, then
    recovers when the config is removed.
+      - Method: developer observation
+      - Observed: passed, with half the check redundant. The empty-surface half repeats the end of
+        check 7's kill sequence, which already finishes at a sleeping creature once the last session
+        goes, and it added no evidence beyond that; the developer said so on running it. The
+        unreadable half is the one that earned its place, because it exercises a different path: a
+        malformed config makes discovery *fail* rather than come back empty, and it is the one case
+        where the creature must show unknown rather than errored — the pet cannot see, and no agent
+        has failed. The core half was confirmed mechanically without touching the real config, by
+        pointing `XDG_CONFIG_HOME` at a throwaway directory holding `not json`:
+        `ok: false`, no sessions, and an error naming the file and the parse position.
 9. Manual: drag the creature toward the left edge — the bubble flips live and the creature stays under
    the pointer; drag back toward the right and it flips back only when it would cross the right edge.
       - Method: run
