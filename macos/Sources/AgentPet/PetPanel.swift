@@ -52,8 +52,9 @@ final class PetPanel: NSPanel {
 final class BubbleView: NSVisualEffectView {
     /// How far the tail hangs below the bubble's body, toward the creature.
     static let tail: CGFloat = 8
+    /// Half the tail's width where it meets the body.
+    static let tailHalfWidth: CGFloat = 9
     private static let radius: CGFloat = 10
-    private static let halfWidth: CGFloat = 9
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -74,7 +75,7 @@ final class BubbleView: NSVisualEffectView {
     func pointTail(at tipX: CGFloat) {
         if let maskedFor, maskedFor.size == frame.size, maskedFor.tipX == tipX { return }
         maskedFor = (frame.size, tipX)
-        let tail = Self.tail, half = Self.halfWidth, radius = Self.radius
+        let tail = Self.tail, half = Self.tailHalfWidth, radius = Self.radius
         maskImage = NSImage(size: frame.size, flipped: false) { rect in
             let body = NSBezierPath(
                 roundedRect: CGRect(x: 0, y: tail, width: rect.width, height: rect.height - tail),

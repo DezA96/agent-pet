@@ -211,6 +211,9 @@ let defaultSide = BubbleSide.left
 /// pet, and a bubble hanging off a screen edge is a thing the side rule fixes on
 /// its own. A frame test would throw away a perfectly reachable creature because
 /// its bubble had drifted.
+/// `honoured` says whether the remembered position was actually used. A caller
+/// that writes anything down needs it: a position rejected as unusable must not
+/// be written back, or the pet remembers a place it just refused to go.
 func placement(
     remembered: StoredPosition?,
     creatureSize: CGSize,
@@ -218,11 +221,11 @@ func placement(
     bubbleHeight: CGFloat,
     visibleFrames: [CGRect],
     primary: CGRect
-) -> (frame: CGRect, side: BubbleSide) {
+) -> (frame: CGRect, side: BubbleSide, honoured: Bool) {
     let size = CGSize(width: bubbleWidth, height: creatureSize.height + bubbleHeight)
 
-    func fallback() -> (CGRect, BubbleSide) {
-        (defaultFrame(size: size, in: primary), defaultSide)
+    func fallback() -> (CGRect, BubbleSide, Bool) {
+        (defaultFrame(size: size, in: primary), defaultSide, false)
     }
 
     guard let remembered else { return fallback() }
@@ -234,7 +237,8 @@ func placement(
     let side = bubbleSide(creature: creature, current: remembered.side, bubbleWidth: bubbleWidth, in: screen)
     return (
         petFrame(creature: creature, side: side, bubbleWidth: bubbleWidth, bubbleHeight: bubbleHeight),
-        side
+        side,
+        true
     )
 }
 

@@ -170,6 +170,21 @@ private let totalHeight = creature.height + bubbleHeight
         primary: screen
     )
     #expect(placed.frame == defaultFrame(size: CGSize(width: bubbleWidth, height: totalHeight), in: screen))
+    // The caller writes this position down on a migration, so it has to be able to
+    // tell that the remembered one was refused rather than used.
+    #expect(placed.honoured == false)
+}
+
+@Test func aPetWithNothingRememberedReportsNothingHonoured() {
+    let placed = placement(
+        remembered: nil,
+        creatureSize: creature,
+        bubbleWidth: bubbleWidth,
+        bubbleHeight: bubbleHeight,
+        visibleFrames: [screen],
+        primary: screen
+    )
+    #expect(placed.honoured == false)
 }
 
 @Test func aUsableRememberedPositionIsHonoured() {
@@ -185,6 +200,7 @@ private let totalHeight = creature.height + bubbleHeight
     #expect(placed.side == .left)
     #expect(placed.frame.maxY == 500)
     #expect(creatureRect(in: placed.frame, side: placed.side, size: creature).minX == 1000)
+    #expect(placed.honoured)
 }
 
 @Test func aRememberedSideThatNoLongerFitsIsRepickedWithoutMovingTheCreature() {

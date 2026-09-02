@@ -54,7 +54,8 @@ final class PetController: NSObject {
     private var side = defaultSide
     /// Where the creature was when the current drag began.
     private var dragOrigin: CGRect?
-    /// Held so the monitors outlive this call and can be torn down with the pet.
+    /// Held so the monitors outlive the call that made them, and can be taken down
+    /// again when the pet is hidden.
     private var pointerMonitors: [Any?] = []
 
     override init() {
@@ -114,7 +115,7 @@ final class PetController: NSObject {
         discoveryTimer = discovery
         startDisplayClock()
 
-        watchPointerForClickThrough()
+        startPointerWatch()
 
         // A display disconnected or resized can strand the pet where no screen
         // reaches, or leave the bubble hanging off the edge of the one that is
@@ -142,9 +143,11 @@ final class PetController: NSObject {
             panel.orderFrontRegardless()
             rows.values.forEach { $0.tick() }
             startDisplayClock()
+            startPointerWatch()
         } else {
             panel.orderOut(nil)
             stopDisplayClock()
+            stopPointerWatch()
         }
         menuBar?.showPetIsVisible(isShowing)
     }
@@ -172,10 +175,17 @@ final class PetController: NSObject {
     /// forgiving to grab than its outline and costs only the corners of a
     /// 64-point square.
     private var solidRegions: [NSRect] {
-        [
-            creatureView.frame,
-            bubble.frame.divided(atDistance: BubbleView.tail, from: .minYEdge).remainder,
-        ]
+        // The tail band is empty apart from the tail itself, so the bubble's body
+        // stops above it and the tail is added back as its own small region: it is
+        // drawn, so it catches its own clicks like everything else that is.
+        let body = bubble.frame.divided(atDistance: BubbleView.tail, from: .minYEdge).remainder
+        let tail = NSRect(
+            x: creatureView.frame.midX - BubbleView.tailHalfWidth,
+            y: bubble.frame.minY,
+            width: BubbleView.tailHalfWidth * 2,
+            height: BubbleView.tail
+        )
+        return [creatureView.frame, body, tail]
     }
 
     /// Let clicks through the empty band beside the creature.
@@ -195,7 +205,8 @@ final class PetController: NSObject {
     /// Two monitors because each is blind to what the other sees: the global one
     /// misses events delivered to this app, the local one misses everything while
     /// the panel is ignoring events. Together they cover the pointer wherever it is.
-    private func watchPointerForClickThrough() {
+    private func startPointerWatch() {
+        guard pointerMonitors.isEmpty else { return }
         panel.acceptsMouseMovedEvents = true
         pointerMonitors = [
             NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
@@ -207,6 +218,14 @@ final class PetController: NSObject {
             },
         ]
         updateClickThrough()
+    }
+
+    /// A hidden pet watches nothing. The global monitor fires on every mouse move
+    /// anywhere on any screen, and doing that for a window nobody can click is the
+    /// same waste the display clock is stopped to avoid.
+    private func stopPointerWatch() {
+        pointerMonitors.compactMap { $0 }.forEach(NSEvent.removeMonitor)
+        pointerMonitors = []
     }
 
     private func updateClickThrough() {
@@ -263,9 +282,16 @@ final class PetController: NSObject {
         // surface whose height has changed since story 002 wrote it and could quietly
         // flip a top-anchored pet to the bottom.
         if let migrated, migrated.fromLegacyKeys {
-            var position = migrated.position
-            position.side = target.side
-            write(position)
+            // Where the derived position was refused as unusable, what gets written
+            // is where the pet actually went. Writing the refused one back would have
+            // the pet remembering a place it had just declined to go.
+            if target.honoured {
+                var position = migrated.position
+                position.side = target.side
+                write(position)
+            } else {
+                write(currentPosition())
+            }
         }
     }
 
@@ -325,6 +351,11 @@ final class PetController: NSObject {
     private func setFrame(_ frame: NSRect) {
         panel.setFrame(frame, display: true)
         layoutSurface()
+        // The surface can move out from under a pointer that is not moving — a row
+        // appears and the bubble grows over it — and no mouse event says so. Without
+        // this the panel keeps whatever it decided last: a click that visibly lands
+        // on a row would fall through to the window beneath it.
+        updateClickThrough()
     }
 
     private func layoutSurface() {
