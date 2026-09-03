@@ -333,6 +333,29 @@ across every live session, before I read a single row.
     the validity rule left it, per the edge case.
 14. Manual: motion — captures a fraction of a second apart show the creature's rhythm matching the most
     urgent dot's; three 90-second CPU samples as in story 004, under 2% of one core.
+      - Method: run
+      - Observed: both halves met. **Rhythm** — measured rather than eyeballed, since the squash is a
+        few points and the eye is a poor judge of it. The creature's body is a solid paper fill, so
+        over a dark background its height segments cleanly out of a screen capture; bursts of captures
+        about 0.077 s apart were measured frame by frame. With the aggregate errored, the height ran
+        84 → 91 → 84 px, an 8.3% swing over a full cycle of ~1.93 s. With the aggregate working, it
+        ran 98 → 101 → 98 px, a 3.1% swing over ~4.4 s. Both cycles undershoot their constants by
+        about a tenth, consistently, which is the sampling rather than the animation — capture
+        intervals are not uniform and elapsed time was divided by frame count. The ratio is the robust
+        figure: 2.27 measured against 2.18 from the constants, within 4%. So the creature runs two
+        distinct rhythms, the urgent one both faster and deeper, and they are the dots' own numbers —
+        `Expression.breath` delegates to `SessionState.breath`, so there is one definition of them.
+
+        **Footprint** — three 90-second samples of the pet's CPU time with five rows showing, three of
+        their dots animating and the creature animating on the urgent rhythm: 0.78 s, 0.79 s, 0.78 s,
+        or 0.87–0.88% of one core. Comfortably under the 2% bar and far steadier than story 004's
+        equivalent run, which spanned 0.43 s to 1.58 s. As there, **this method cannot detect what the
+        animation costs, which is weaker than showing it costs nothing**: story 004's slowest sample
+        was its run with no animation at all, so run-to-run variance on a working machine exceeds the
+        difference being looked for. The structural claim is the firmer one and this story strengthens
+        it — the creature's breath is a Core Animation squash running in the render server, and the
+        one-second display timer still touches nothing but the rows' age labels, so no timer in this
+        process draws the creature at all.
 15. Manual: show/hide from the menu bar hides and shows the creature with the bubble.
       - Method: developer observation
       - Observed: passed. Hiding and showing from the menu bar takes the whole surface, creature
