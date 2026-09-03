@@ -8,8 +8,15 @@ Release 001 covers Claude Code CLI and Codex CLI sessions on macOS.
 
 ## What it shows
 
-One row per live session: which agent, the project, what that session is currently
-doing, and how many seconds ago that was observed.
+A small drawn creature, with a bubble beside it holding one row per live session:
+which agent, the project, what that session is currently doing, and how long it has
+been doing it.
+
+The age counts from when that state began, not from when the pet looked. Wherever
+the agent timestamped the change itself — Claude's `statusUpdatedAt`, the transcript
+entry an error stopped on, a Codex turn boundary — that is the instant shown; only
+where the agent recorded no time does it fall back to when the pet first saw the
+reading.
 
 ```
 ● Claude agent-agnostic-pet           1s     green
@@ -55,6 +62,17 @@ in the render server, so it costs the app no per-frame work.
 Waiting is deliberately not idle: an idle session finished cleanly, a waiting one is
 blocked mid-turn and stays that way until you answer.
 
+**The creature says what the whole surface adds up to**, so the shape you catch out of
+the corner of your eye carries the answer before you read a row. It wears the state of
+the most urgent live session — errored, then waiting, then working, then unknown, then
+idle — and breathes with that state's rhythm, so it moves in step with the dot it is
+speaking for. `unknown` ranking above `idle` is the load-bearing part: a surface where
+nothing could be read must never show a creature that says everything is finished. With
+no sessions at all it sleeps, which is a different thing to say than idle. Expression is
+carried by pose, eyes and mouth only — never by colour, which stays the dots' job. The
+drawing itself is a placeholder and will be redrawn; the vocabulary of six expressions
+is not.
+
 Attention states are Claude Code only. Codex publishes nothing about them — see below.
 
 Three situations replace the list rather than showing rows:
@@ -74,7 +92,8 @@ Needs Rust and the Xcode Command Line Tools. No Xcode, no package manager.
 open build/AgentPet.app
 ```
 
-The pet has no dock icon and no menu bar. Quit it with `pkill AgentPet`.
+The pet has no dock icon. Its controls live in a pawprint menu bar item — Hide Pet,
+which is the only way to get an accessory app back once hidden, and Quit Agent Pet.
 
 ## Configuration
 
