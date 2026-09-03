@@ -176,8 +176,8 @@ Single-user local release: the developer runs it on their own machine, no rollou
 
   What this entry claimed as its second leg was wrong, and preflight run 1 (finding 3) found it: the
   Codex adapter does read the directory list. It skips every candidate rollout that fails
-  `under_any(path, profiles)`, whose own doc says it exists to "keep discovery to the configured
-  surface", and `a_rollout_outside_every_watched_directory_is_left_alone` tests exactly that. The
+  `under_any(path, profiles)`, whose own doc gives its job as keeping discovery to the configured
+  surface, and `a_rollout_outside_every_watched_directory_is_left_alone` tests exactly that. The
   conclusion drawn from that leg — that a hand-added directory can only ever matter for a session that
   is not running — does not follow, and the case it dismissed was real: the pet learned
   `CLAUDE_CONFIG_DIR` and nothing else, so a live Codex CLI session under a non-default `CODEX_HOME`
