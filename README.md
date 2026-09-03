@@ -8,9 +8,9 @@ Release 001 covers Claude Code CLI and Codex CLI sessions on macOS.
 
 ## What it shows
 
-A small drawn creature, with a bubble beside it holding one row per live session:
-which agent, the project, what that session is currently doing, and how long it has
-been doing it.
+A small drawn creature under a speech bubble, and in the bubble one row per live
+session: which agent, the project, what that session is currently doing, and how long
+that has been true.
 
 The age counts from when that state began, not from when the pet looked. Wherever
 the agent timestamped the change itself — Claude's `statusUpdatedAt`, the transcript
@@ -28,7 +28,7 @@ reading.
 ● Claude claude-code-experimental    36s     orange
   Bash command approval
 
-● Claude margin-release             2m 4s    red
+● Claude margin-release            2m 04s    red
   Error: 529
 
 ● Claude scratch-experiments          1s     grey
@@ -56,8 +56,9 @@ unreadable state must never be mistaken for a session that finished cleanly.
 **A live session breathes; a settled one holds still.** Working breathes slowly and
 shallowly — busy, wanting nothing from you. Waiting and errored breathe faster and deeper,
 so the states that need you separate from the one that does not by motion as well as by
-colour. Idle and unknown do not move at all. It is a Core Animation opacity pulse, running
-in the render server, so it costs the app no per-frame work.
+colour. Idle and unknown do not move at all. It is a Core Animation pulse running in the
+render server — opacity for the dots, a squash for the creature, which must not fade out
+over whatever it is floating above — so it costs the app no per-frame work.
 
 Waiting is deliberately not idle: an idle session finished cleanly, a waiting one is
 blocked mid-turn and stays that way until you answer.
@@ -75,11 +76,12 @@ is not.
 
 Attention states are Claude Code only. Codex publishes nothing about them — see below.
 
-Three situations replace the list rather than showing rows:
+A session whose working state could not be read keeps its row and says `state unknown`
+on it — never guessed as idle or working. Two situations have no rows to show, and
+replace the list entirely:
 
 | | |
 |---|---|
-| `state unknown` | that session's working state could not be read — never guessed as idle or working |
 | `sessions unreadable` | discovery itself failed; the reason is written to the log |
 | `no agents running` | discovery worked and nothing is running |
 
@@ -92,8 +94,9 @@ Needs Rust and the Xcode Command Line Tools. No Xcode, no package manager.
 open build/AgentPet.app
 ```
 
-The pet has no dock icon. Its controls live in a pawprint menu bar item — Hide Pet,
-which is the only way to get an accessory app back once hidden, and Quit Agent Pet.
+The pet has no dock icon. Its controls live in a pawprint menu bar item: Hide Pet, which
+becomes Show Pet and is the only way back for an app with nothing in the dock to click,
+and Quit Agent Pet.
 
 ## Configuration
 
@@ -111,8 +114,9 @@ Directories that do not exist are skipped.
 
 ## How it works
 
-The pet reads files each agent already writes, and writes nothing of its own. Each
-agent proves it differently, and each proof stays inside that agent's adapter.
+The pet reads files each agent already writes, and writes nothing an agent owns — its own
+window position and a line to the log when discovery fails are all it puts anywhere. Each
+agent proves liveness differently, and each proof stays inside that agent's adapter.
 
 **Claude Code** publishes a registry file per session:
 
