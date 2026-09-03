@@ -5,7 +5,7 @@
 which carries C-013's aggregate expression (absorbed at the spec round of story 004).
 
 ## Status
-Implementing
+Done
 
 ## User Outcome
 As someone who uses various coding agents, I want the surface to be a creature that reacts to my
@@ -408,6 +408,17 @@ across every live session, before I read a single row.
         `setFrame`. The narrower case the third review round named — macOS relocating the window while
         the side does *not* change, so both early returns are taken — is still only covered by the
         call sitting above them, not by observation.
+
+### Verification
+Verified: 2026-09-02
+Unverified: one case, named by the third review round and still not observed — macOS relocating the
+window on a display change while the bubble's side does *not* change, so both of
+`revalidatePlacement`'s early returns are taken, with a click then tested against a pointer that has
+not moved. The `updateClickThrough()` sitting above those returns is what should cover it, and check
+16 exercised the same notification with the side changing, which routes through `setFrame` instead.
+Closing it needs a real display disconnect: the Dock substitute cannot make macOS relocate a window.
+Separately, check 13 as written was never run at all — its premise cannot be set up — and what it was
+for was covered by that substitute instead.
 
 ## Design Requirement
 - Design: none — routine work following an existing pattern. AppKit and Core Animation on a surface
