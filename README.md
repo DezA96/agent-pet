@@ -12,11 +12,13 @@ A small drawn creature under a speech bubble, and in the bubble one row per live
 session: which agent, the project, what that session is currently doing, and how long
 that has been true.
 
-The age counts from when that state began, not from when the pet looked. Wherever
-the agent timestamped the change itself — Claude's `statusUpdatedAt`, the transcript
-entry an error stopped on, a Codex turn boundary — that is the instant shown; only
-where the agent recorded no time does it fall back to when the pet first saw the
-reading.
+The age counts from when that state began, not from when the pet looked. Where the
+agent timestamped the change itself — Claude's `statusUpdatedAt`, the transcript entry
+an error stopped on, a Codex turn boundary — that is the instant counted from; where
+the agent recorded no time it falls back to when the pet first saw the reading. One
+gap remains, and it is known: while a row's state stays the same on screen, the age
+holds still even if the agent started a fresh turn between two polls, so a turn
+boundary crossed inside one two-second interval is counted from the previous turn.
 
 ```
 ● Claude agent-agnostic-pet           1s     green
@@ -76,14 +78,14 @@ is not.
 
 Attention states are Claude Code only. Codex publishes nothing about them — see below.
 
-A session whose working state could not be read keeps its row and says `state unknown`
+A session whose working state could not be read keeps its row and says `State unknown`
 on it — never guessed as idle or working. Two situations have no rows to show, and
 replace the list entirely:
 
 | | |
 |---|---|
-| `sessions unreadable` | discovery itself failed; the reason is written to the log |
-| `no agents running` | discovery worked and nothing is running |
+| `Sessions unreadable` | discovery itself failed; the reason is written to the log |
+| `No agents running` | discovery worked and nothing is running |
 
 ## Build and run
 
