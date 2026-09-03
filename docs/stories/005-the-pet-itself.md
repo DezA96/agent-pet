@@ -160,6 +160,15 @@ across every live session, before I read a single row.
 - **The aggregate state is computed in the Swift surface, not the Rust core.** It is a rendering
   concern over the session list the pet already receives, and the FFI payload does not change, so no
   adapter is touched. The priority function is pure and lives where the Swift tests can reach it.
+- **A new `macos/Sources/PetState/` module**, with its own SwiftPM target and test target — an
+  explicit scope change made at the build and recorded here at its close. Reaching the Swift tests
+  meant a module they compile, and `PetGeometry` is documented as the placement arithmetic and
+  nothing else, so a state-priority rule dropped into it would have made that description untrue.
+  The new module holds `SessionState`, moved out of `Core.swift`, together with the urgency order,
+  `aggregate`, and the breath's `(period, floor)` pair. That last one is the part worth having:
+  the row dot and the creature now read the same definition of the rhythm, where two copies would
+  have become two rhythms the first time either was tuned. `build.sh` compiles it into the app and
+  `Package.swift` gains the two targets; `./test.sh` runs both suites unchanged.
 - **A process-wide mouse-moved monitor**, added at the build and recorded here at its close rather
   than settled up front. Letting clicks through the transparent band beside the creature turns out to
   need `ignoresMouseEvents` toggled from the pointer's position — declining the point in `hitTest`
