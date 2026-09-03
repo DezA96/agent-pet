@@ -347,6 +347,16 @@ across every live session, before I read a single row.
         visible frame: moving the Dock to a side edge shrinks the screen's width and posts the same
         `didChangeScreenParametersNotification`, which would exercise the wiring without unplugging
         anything.
+
+        **That substitute was run, and the criterion holds.** The pet was parked with the bubble flush
+        against the main display's right edge (creature at x 1428, side `right`, bubble 1428–1728) and
+        the Dock was then moved to that edge, shrinking the visible frame from 1728 to 1652 points
+        wide. The bubble no longer fitted on its side and re-picked: a capture shows it running left
+        from the creature with the tail re-pointed. The creature did not move — measured, not judged:
+        its body occupied rows 1097–1195 of a screen capture before the change and 1097–1195 after.
+        The first attempt put the Dock on the *left*, which macOS placed on the second display instead
+        (its visible frame narrowed from 1376 to 1312 while the main display's did not change at all),
+        so the run was repeated against the right edge.
 14. Manual: motion — captures a fraction of a second apart show the creature's rhythm matching the most
     urgent dot's; three 90-second CPU samples as in story 004, under 2% of one core.
       - Method: run
@@ -382,6 +392,22 @@ across every live session, before I read a single row.
     both of `revalidatePlacement`'s early returns could leave the click rule deciding against the old
     frame. `updateClickThrough()` now runs before them; this check is what confirms it, since a
     display change is not something the synthetic-click rig can stage.
+      - Method: run
+      - Observed: met, and staged without a cable. The developer could not run it as written — pulling
+        a display means moving the pointer, which is the one thing the check forbids — so it was run
+        on the same Dock-driven screen change as check 13's substitute, triggered from a shell so
+        nothing touched the mouse. The pointer was parked at (1300, 505), a point outside the pet
+        entirely while the bubble ran right; a control click there with no preceding movement reached
+        the TextEdit window beneath. The Dock was then moved to the screen's right edge, the bubble
+        flipped left over that point, and a second click with no preceding movement — the pointer
+        never having moved between the two — was swallowed. So the click rule kept up with a surface
+        that moved underneath a motionless pointer, which is what `updateClickThrough()` at the top of
+        `revalidatePlacement` exists for.
+
+        One gap remains: this exercised the notification path with the *side changing*, which reaches
+        `setFrame`. The narrower case the third review round named — macOS relocating the window while
+        the side does *not* change, so both early returns are taken — is still only covered by the
+        call sitting above them, not by observation.
 
 ## Design Requirement
 - Design: none — routine work following an existing pattern. AppKit and Core Animation on a surface
