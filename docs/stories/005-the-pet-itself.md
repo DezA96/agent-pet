@@ -275,15 +275,24 @@ across every live session, before I read a single row.
     corner was and the new keys are written; `defaults read gg.deza.agent-pet` shows no write on any
     programmatic move.
       - Method: run
-      - Observed: partly. Relaunch restores: the pet was parked by writing `petCreatureX`,
+      - Observed: all three halves met. Relaunch restores: the pet was parked by writing `petCreatureX`,
         `petPositionEdgeY`, `petPositionAnchor` and `petBubbleSide`, relaunched, and appeared at
         exactly the parked frame (measured off a screen capture: creature at x 900–964, frame x
         664–964, bottom edge at y 400, all as computed). No write on a programmatic move: story 002's
         `petPositionX` read 1425 before and after launch placement, several polls, a resize and two
         side flips, and was never rewritten; the new keys changed only on a drag's mouse-up.
-        **Not covered**: the migration path itself — launching with story 002's keys only, after
-        `defaults delete` of the new ones — which is still worth running by hand, since it is the one
-        path that writes without a drag.
+        The migration path: with `petCreatureX` and `petBubbleSide` deleted and story 002's
+        `petPositionX = 1425`, `petPositionEdgeY = 1087`, `petPositionAnchor = top` left in place, a
+        launch wrote `petCreatureX = 1661` and `petBubbleSide = left`. 1661 is exactly
+        `1425 + 300 - 64` — the creature under the right corner of the frame story 002 remembered — and
+        a capture shows the bubble running left from it with the tail pointing back, so the bubble
+        occupies the old frame's own footprint. `petPositionX` was still 1425 afterwards, never
+        rewritten.
+
+        Worth recording for whoever runs this next: the first attempt appeared to fail, with neither
+        new key written. The cause was the instructions, not the code — `pkill` followed immediately
+        by `open` races, because macOS will not relaunch an app that is still terminating, so the pet
+        never started and the migration never ran. Leave a moment between the two.
 12. Manual: rows added and removed with the pet in the upper half, then the lower half — top edge holds
     and the creature descends; bottom edge holds and the creature stays.
       - Method: developer observation
