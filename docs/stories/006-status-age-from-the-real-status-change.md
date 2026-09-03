@@ -4,7 +4,7 @@
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md)); backlog row C-017.
 
 ## Status
-Implementing
+Done
 
 ## User Outcome
 As the developer, I want the age beside a session to say how long that session has actually been in the state
@@ -198,13 +198,48 @@ the count every time I relaunch the pet.
         criteria is recorded as C-028 and scoped into this release; see `## Excluded From This Change`.
 11. The C-017 observation, re-run: a Claude session left idle for a known span, the pet quit and
     relaunched, and the row's age read against that span rather than restarting at `0s`. Manual.
+      - Method: developer
+      - Observed: passed. The developer ran it against a live Claude session, with the pet rebuilt from the
+        story's committed code and the row's expected age read independently out of the session's own
+        registry file. After `pkill AgentPet` and a relaunch the row's age carried on from the status's
+        real start instead of restarting at `0s`. This is the defect C-017 was raised for, gone.
 12. A Claude session working through several tool calls: the activity line changes as before and names
     the tool in use, while the age climbs continuously across those changes rather than resetting.
     Manual.
+      - Method: developer
+      - Observed: passed. The developer watched this project's own Claude session row live while the session
+        worked through the tool calls of this build — reads, greps, a build and the edit that wrote
+        check 11 into this file. The activity line named each tool and changed as the tools changed,
+        exactly as before the story, while the age climbed straight through those changes rather than
+        restarting on any of them. This is the criterion that a changed activity line does not restart
+        the count, observed against a real session rather than a fixture.
 13. A live Codex row's age read against the `timestamp` of the last boundary in its own rollout file.
-    Manual.
+    Manual — run mechanically instead, at the developer's direction.
+      - Method: mechanical pass and developer, against a live Codex session
+      - Observed: exact match. `cargo run --example probe` runs the real `Observer` — the same poll the
+        app's FFI calls — and reported the live Codex row's `statusSince` as `1788408886022`. Read
+        independently out of that session's own rollout,
+        `~/.codex/sessions/2026/09/03/rollout-2026-09-03T00-13-31-01a06578-…jsonl`, the last of its four
+        boundaries is `task_complete` at `2026-09-03T04:14:46.022Z`, which is `1788408886022`. The same
+        line's payload carries `started_at: 1788408876` — a different value, in seconds — so this also
+        shows on live data that the envelope's `timestamp` is the field being read, not the payload's.
+        The developer had the pet on screen while the probe ran and confirmed the Codex row's age read against
+        that boundary, so the on-screen number and the value behind it were checked together rather
+        than the render being inferred. The rollout held only a `task_complete` boundary last, so the
+        live run exercised the idle boundary; `task_started` and the backscan path are covered by
+        check 4.
 14. A row whose project name sits near its wrap point does not re-wrap as the age ticks within a tier,
     and the dot and age stay level with the name's first line as story 004 requires. Manual.
+      - Method: developer
+      - Observed: passed. The developer watched three staged rows whose project names straddle the wrap point at
+        16, 26 and 32 characters — the label reads `Claude <name>` against a 300pt panel — alongside the
+        real Claude and Codex rows. Within a tier the names held their wrapping as the ages ticked, and
+        the dot and the age stayed level with each name's first line. The rows were staged the way
+        `tools/stage-sessions.sh` does it, on real held processes with their real `procStart`, into a
+        fixture directory added to `watchDirectories` rather than replacing them so the live Codex row
+        stayed on screen. The first staging attempt dated the statuses 50 and 200 seconds before the
+        held processes had started, and the pet refused all three and fell back to first-seen — check
+        15's past bound, working on live data rather than in a fixture.
 15. A status time older than its own session is refused and the row falls back to first-seen, for both
     agents: Claude against `procStart`, Codex against its rollout's first line. Unit (Rust).
       - Method: run
@@ -214,6 +249,13 @@ the count every time I relaunch the pet.
         `::proc_start_reads_as_the_utc_moment_the_process_began`, and
         `codex::rollout::tests::a_boundary_dated_before_its_own_session_is_refused_not_shown` plus
         `::the_session_start_is_read_from_line_one`, which reads the bound off the committed fixture.
+
+### Verification
+Verified: 2026-09-02 to 2026-09-03, three review rounds and the manual checks
+Unverified: on live data the Codex path was exercised only through a `task_complete` boundary found by
+the forward tail; `task_started` and the backscan are covered by fixture tests alone. The limit
+recorded as C-028 is a known gap in behaviour rather than in verification, and is named under
+`## Excluded From This Change`.
 
 ## Amended During Build
 
