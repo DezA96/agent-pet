@@ -279,8 +279,16 @@ across every live session, before I read a single row.
         swallowed clicks — and then disproved the obvious fix: with a `hitTest` override returning nil
         the click *still* failed to reach the window beneath, because the window consumes the event
         regardless. `ignoresMouseEvents`, toggled from the pointer's position, is what does it.
-        **Not covered**: a click with the pointer already at rest when the bubble grows over it, which
-        is the residual case in check 16 below.
+        The remaining case — a click with the pointer already at rest when the bubble grows over it —
+        was staged afterwards, since holding a pointer perfectly still while a row appears is
+        something synthetic events do and a hand cannot. With the pet top-anchored, its frame ran
+        y 317–437 and its transparent gap y 381–437, x 564–800; the pointer was parked at (650, 410),
+        inside that gap. Control first: a click there with no preceding movement reached the TextEdit
+        window beneath, so the gap was genuinely passing clicks through. Then, without the pointer
+        moving at all, four staged sessions were started; the bubble grew downward over the resting
+        pointer, a capture confirms (650, 410) landing on a session row, and a second click with no
+        preceding movement was swallowed — the window beneath stayed unfocused. This is the case the
+        second review round found, and the `updateClickThrough()` in `setFrame` is what closes it.
 11. Manual: quit and relaunch — the creature and the bubble's side come back as left; with story 002's
     keys only (delete the new keys with `defaults delete`), the creature appears where the old frame's
     corner was and the new keys are written; `defaults read gg.deza.agent-pet` shows no write on any
