@@ -247,14 +247,25 @@ across every live session, before I read a single row.
 9. Manual: drag the creature toward the left edge — the bubble flips live and the creature stays under
    the pointer; drag back toward the right and it flips back only when it would cross the right edge.
       - Method: run
-      - Observed: met mechanically rather than by hand, by posting real events through the window
+      - Observed: passed, with the flip's look recorded as C-026. Met mechanically rather than by
+        hand, by posting real events through the window
         server (`CGEvent`, `.leftMouseDown` → 20 `.leftMouseDragged` → `.leftMouseUp`). Dragging from
         screen x 930 to 250 moved `petCreatureX` from 900 to 220 — exactly the 680 points dragged, so
         the creature stayed under the pointer throughout — and `petBubbleSide` went from `left` to
         `right` as the bubble reached the screen edge. An earlier drag of 530 points that did *not*
         reach the edge left the side at `left`, which is the half of the criterion that says it flips
-        only when it must. **Whether the flip reads as live rather than as a snap is not settled by
-        this** and still wants a person's eye.
+        only when it must.
+
+        The developer then read the flip as a snap rather than as live, which sent the question back to
+        the evidence: a second drag was held mid-flight, with the button still down, and photographed.
+        The bubble had already swung to the creature's right with its tail re-pointed *before* release,
+        and the creature had tracked the pointer exactly — dragged 250 points, `petCreatureX` 400 →
+        150. So the criterion holds: the flip is live, not deferred to mouse-up.
+        What is being seen is that it is *instant*. That discontinuity is inherent rather than a
+        shortcut — the bubble is either left of the creature or right of it with no valid position
+        between, and the flip fires when the bubble is already flush against the screen edge, so it is
+        always a full-width jump. Accepted by the developer on that basis; making it read smoothly is
+        C-026.
 10. Manual: a press on the bubble moves nothing and does not reach the window beneath; a press in the
     transparent gap reaches the window beneath; a press on the creature drags; throughout, the
     frontmost app stays frontmost.
