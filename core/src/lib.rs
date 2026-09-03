@@ -304,7 +304,10 @@ mod tests {
 
         let procs = FakeProcessTable {
             starts: std::collections::HashMap::from([(900, "Mon Aug 24 04:00:00 2026".to_string())]),
-            dirs: std::collections::HashMap::from([("claude".to_string(), vec![profile])]),
+            dirs: std::collections::HashMap::from([(
+                ("claude".to_string(), "CLAUDE_CONFIG_DIR".to_string()),
+                vec![profile],
+            )]),
             named: std::collections::HashMap::from([("codex".to_string(), vec![901])]),
             open: std::collections::HashMap::from([(
                 901,
@@ -349,7 +352,10 @@ mod tests {
         let rollout = std::fs::canonicalize(&rollout).unwrap();
 
         let procs = FakeProcessTable {
-            dirs: std::collections::HashMap::from([("codex".to_string(), vec![root])]),
+            dirs: std::collections::HashMap::from([(
+                ("codex".to_string(), "CODEX_HOME".to_string()),
+                vec![root],
+            )]),
             named: std::collections::HashMap::from([("codex".to_string(), vec![7710])]),
             open: std::collections::HashMap::from([(7710, vec![rollout])]),
             ..Default::default()

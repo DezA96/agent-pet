@@ -8,10 +8,11 @@ use std::path::PathBuf;
 /// including one under a profile directory never seen before — appear within one
 /// tick with no restart and no configuration.
 ///
-/// Three sources, unioned: the defaults, whatever the user put in the config file,
-/// and `learned` — what each adapter's own running processes reported. This
-/// function names no agent and reads no process: which processes to ask, and what
-/// to ask them, is each adapter's business, and the pet only unions the answers.
+/// Two sources, unioned: `learned` — every directory the adapters asked for, each
+/// adapter's own default among them — and whatever the user put in the config
+/// file. This function names no agent, reads no process and knows no default:
+/// which directories an agent keeps sessions in is that agent's own fact, and the
+/// pet only unions the answers and drops the duplicates.
 pub fn candidate_directories(cfg: &Config, learned: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
@@ -22,14 +23,11 @@ pub fn candidate_directories(cfg: &Config, learned: &[PathBuf]) -> Vec<PathBuf> 
         }
     };
 
-    for d in config::default_directories() {
-        push(d);
+    for d in learned {
+        push(d.clone());
     }
     for d in &cfg.watch_directories {
         push(config::expand_tilde(d));
-    }
-    for d in learned {
-        push(d.clone());
     }
     out
 }
@@ -37,18 +35,6 @@ pub fn candidate_directories(cfg: &Config, learned: &[PathBuf]) -> Vec<PathBuf> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn defaults_are_watched_with_no_configuration() {
-        let home = PathBuf::from(std::env::var("HOME").unwrap());
-        let out = candidate_directories(&Config::default(), &[]);
-        let has = |p: PathBuf| {
-            let p = std::fs::canonicalize(&p).unwrap_or(p);
-            out.contains(&p)
-        };
-        assert!(has(home.join(".claude")), "default Claude directory missing");
-        assert!(has(home.join(".codex")), "default Codex directory missing");
-    }
 
     #[test]
     fn a_directory_learned_from_a_live_process_is_included() {

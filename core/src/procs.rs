@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// The pet's read-only window onto the process table.
 ///
@@ -57,7 +58,21 @@ pub struct SystemProcessTable {
     /// Keyed by command as well as PID: two adapters ask about two different
     /// commands, and one asking must not evict what the other learned.
     dir_cache: Mutex<HashMap<(String, u32), Option<PathBuf>>>,
+    /// The last process listing and when it was taken.
+    listing: Mutex<Option<(Instant, String)>>,
 }
+
+/// How long one process listing serves.
+///
+/// `ps -Ao pid=,comm=` costs ~35 ms here, and three callers want it within one
+/// tick: each adapter asking which of its processes are running, and the Codex
+/// adapter asking again on its way to their open files. The poll runs every two
+/// seconds on the thread drawing the surface, so paying for three listings is a
+/// measurable slice of a core spent on an answer that cannot change inside one
+/// tick's snapshot. Well under the poll interval, so no listing is ever reused
+/// by a later tick — a session that exits is gone from the next one, which is
+/// the property every liveness test in this core depends on.
+const LISTING_TTL: Duration = Duration::from_millis(500);
 
 impl SystemProcessTable {
     pub fn new() -> Self {
@@ -74,16 +89,27 @@ impl SystemProcessTable {
             .args(["eww", "-o", "command=", "-p", &pid.to_string()])
             .output()
             .ok()?;
-        let env = String::from_utf8_lossy(&out.stdout);
-        let prefix = format!("{var}=");
-        match env
-            .split_whitespace()
-            .find_map(|t| t.strip_prefix(&prefix))
-        {
-            Some(dir) => Some(PathBuf::from(dir)),
-            // No override means the process is using the default profile.
-            None => Some(default.to_path_buf()),
+        let text = String::from_utf8_lossy(&out.stdout);
+        // No override means the process is using the default profile.
+        Some(dir_in_environment(&text, var).unwrap_or_else(|| default.to_path_buf()))
+    }
+
+    /// One `ps -Ao pid=,comm=` shared by everything that asks inside a tick.
+    fn listing(&self) -> String {
+        let mut held = self.listing.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((taken, text)) = held.as_ref() {
+            if taken.elapsed() < LISTING_TTL {
+                return text.clone();
+            }
         }
+        let Ok(out) = Command::new("ps").args(["-Ao", "pid=,comm="]).output() else {
+            // Leave the stale listing in place rather than caching a failure: the
+            // next caller retries instead of inheriting an empty machine.
+            return String::new();
+        };
+        let text = String::from_utf8_lossy(&out.stdout).into_owned();
+        *held = Some((Instant::now(), text.clone()));
+        text
     }
 }
 
@@ -117,25 +143,7 @@ impl ProcessTable for SystemProcessTable {
     }
 
     fn pids_of_command(&self, name: &str) -> Vec<u32> {
-        let Ok(listing) = Command::new("ps").args(["-Ao", "pid=,comm="]).output() else {
-            return Vec::new();
-        };
-        // `comm` is sometimes a bare name and sometimes a full path, depending on
-        // how the process was launched; both spellings name the same command.
-        let suffix = format!("/{name}");
-        let mut pids = Vec::new();
-        for line in String::from_utf8_lossy(&listing.stdout).lines() {
-            let Some((pid, comm)) = line.trim().split_once(char::is_whitespace) else {
-                continue;
-            };
-            let comm = comm.trim();
-            if comm == name || comm.ends_with(&suffix) {
-                if let Ok(pid) = pid.trim().parse::<u32>() {
-                    pids.push(pid);
-                }
-            }
-        }
-        pids
+        pids_in_listing(&self.listing(), name)
     }
 
     fn open_paths(&self, pids: &[u32]) -> HashMap<u32, Vec<PathBuf>> {
@@ -177,32 +185,214 @@ impl ProcessTable for SystemProcessTable {
 
     fn profile_dirs_of_command(&self, command: &str, var: &str, default: &Path) -> Vec<PathBuf> {
         let live_pids = self.pids_of_command(command);
+        // Recovered rather than surrendered to: a panic under this lock once cost
+        // every learned directory for the life of the process, which is every
+        // custom-profile session silently absent with the poll still reporting ok.
+        let mut cache = self.dir_cache.lock().unwrap_or_else(|p| p.into_inner());
+        cached_profile_dirs(&mut cache, command, &live_pids, |pid| {
+            self.profile_dir_of(pid, var, default)
+        })
+    }
+}
 
-        let Ok(mut cache) = self.dir_cache.lock() else {
-            return Vec::new();
+/// The value of `var` in one `ps eww -o command=` line, or `None` where the line
+/// does not carry it.
+///
+/// That output is a process's argv followed by its environment, all separated by
+/// spaces, and two things follow from that. The *last* match wins: a launcher's
+/// own arguments can carry `VAR=...` and the real environment is printed after
+/// them. And a value runs to the next `KEY=` token rather than to the next space,
+/// because a profile directory can legitimately contain one — anything under
+/// `~/Library/Application Support` does — and cutting at the space yields a
+/// directory that does not exist, which the pet shows as a session that never
+/// appears rather than as an error.
+fn dir_in_environment(text: &str, var: &str) -> Option<PathBuf> {
+    let prefix = format!("{var}=");
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let at = tokens.iter().rposition(|t| t.starts_with(&prefix))?;
+    let mut value = tokens[at][prefix.len()..].to_string();
+    for token in &tokens[at + 1..] {
+        if is_assignment(token) {
+            break;
+        }
+        value.push(' ');
+        value.push_str(token);
+    }
+    (!value.is_empty()).then(|| PathBuf::from(value))
+}
+
+/// Whether a token opens a new environment entry, in the shape environments
+/// print them: an upper-case name, then `=`.
+fn is_assignment(token: &str) -> bool {
+    let Some((key, _)) = token.split_once('=') else {
+        return false;
+    };
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// PIDs whose command is `name`, out of a `ps -Ao pid=,comm=` listing.
+///
+/// `comm` is sometimes a bare name and sometimes a full path, depending on how
+/// the process was launched; both spellings name the same command.
+fn pids_in_listing(text: &str, name: &str) -> Vec<u32> {
+    let suffix = format!("/{name}");
+    let mut pids = Vec::new();
+    for line in text.lines() {
+        let Some((pid, comm)) = line.trim().split_once(char::is_whitespace) else {
+            continue;
         };
-        // Processes that have exited stop being worth remembering, and only this
-        // command's entries are this call's to forget.
-        cache.retain(|(c, pid), _| c != command || live_pids.contains(pid));
-
-        let mut dirs = Vec::new();
-        for pid in live_pids {
-            let key = (command.to_string(), pid);
-            let dir = match cache.get(&key) {
-                Some(known) => known.clone(),
-                None => {
-                    let found = self.profile_dir_of(pid, var, default);
-                    cache.insert(key, found.clone());
-                    found
-                }
-            };
-            if let Some(dir) = dir {
-                if !dirs.contains(&dir) {
-                    dirs.push(dir);
-                }
+        let comm = comm.trim();
+        if comm == name || comm.ends_with(&suffix) {
+            if let Ok(pid) = pid.trim().parse::<u32>() {
+                pids.push(pid);
             }
         }
-        dirs
+    }
+    pids
+}
+
+/// The learned directories of one command's live processes, reading each
+/// process's environment at most once for as long as it runs.
+///
+/// A running process cannot change its own environment, so re-reading it every
+/// tick spends battery to learn something that cannot have changed. Split out
+/// from the process table so both halves of that — reading once, and one
+/// command's ask never evicting another's — are testable without a machine.
+fn cached_profile_dirs(
+    cache: &mut HashMap<(String, u32), Option<PathBuf>>,
+    command: &str,
+    live_pids: &[u32],
+    read: impl Fn(u32) -> Option<PathBuf>,
+) -> Vec<PathBuf> {
+    // Processes that have exited stop being worth remembering, and only this
+    // command's entries are this call's to forget.
+    cache.retain(|(c, pid), _| c != command || live_pids.contains(pid));
+
+    let mut dirs = Vec::new();
+    for pid in live_pids {
+        let key = (command.to_string(), *pid);
+        let dir = match cache.get(&key) {
+            Some(known) => known.clone(),
+            None => {
+                let found = read(*pid);
+                cache.insert(key, found.clone());
+                found
+            }
+        };
+        if let Some(dir) = dir {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    /// Real `ps eww -o command=` output, reduced: argv first, environment after.
+    const PS_LINE: &str =
+        "node /opt/bin/claude --resume SHLVL=1 CLAUDE_CONFIG_DIR=/Users/x/.dev TERM=xterm-256color";
+
+    #[test]
+    fn a_variable_is_read_out_of_the_environment() {
+        assert_eq!(
+            dir_in_environment(PS_LINE, "CLAUDE_CONFIG_DIR"),
+            Some(PathBuf::from("/Users/x/.dev"))
+        );
+    }
+
+    #[test]
+    fn a_variable_the_process_does_not_set_is_absent_rather_than_empty() {
+        assert_eq!(dir_in_environment(PS_LINE, "CODEX_HOME"), None);
+    }
+
+    #[test]
+    fn a_profile_directory_containing_a_space_is_read_whole() {
+        // Cut at the space, this reads `/Users/x/Library/Application`, which is a
+        // directory that does not exist and a session that never appears.
+        let line = "codex --sandbox SHLVL=1 CODEX_HOME=/Users/x/Library/Application Support/codex LANG=en_US.UTF-8";
+        assert_eq!(
+            dir_in_environment(line, "CODEX_HOME"),
+            Some(PathBuf::from("/Users/x/Library/Application Support/codex"))
+        );
+    }
+
+    #[test]
+    fn the_environment_wins_over_the_same_text_in_the_arguments() {
+        // A launcher that prints the assignment as one of its own arguments; the
+        // environment is what the process actually runs under, and comes second.
+        let line = "sh -c CODEX_HOME=/decoy codex SHLVL=1 CODEX_HOME=/Users/x/.codex-work";
+        assert_eq!(
+            dir_in_environment(line, "CODEX_HOME"),
+            Some(PathBuf::from("/Users/x/.codex-work"))
+        );
+    }
+
+    #[test]
+    fn both_spellings_of_a_command_name_are_the_same_command() {
+        let listing = "  401 claude\n  402 /opt/homebrew/bin/claude\n  403 claude-desktop\n  404 node\n";
+        assert_eq!(pids_in_listing(listing, "claude"), vec![401, 402]);
+    }
+
+    #[test]
+    fn a_listing_that_makes_no_sense_yields_no_pids() {
+        assert_eq!(pids_in_listing("", "codex"), Vec::<u32>::new());
+        assert_eq!(pids_in_listing("garbage\n\n  x claude\n", "claude"), Vec::<u32>::new());
+    }
+
+    /// Counts how many times a PID's environment was actually read.
+    fn counting_reader(log: &RefCell<Vec<u32>>) -> impl Fn(u32) -> Option<PathBuf> + '_ {
+        move |pid| {
+            log.borrow_mut().push(pid);
+            Some(PathBuf::from(format!("/profiles/{pid}")))
+        }
+    }
+
+    #[test]
+    fn a_running_process_is_read_once_however_many_ticks_pass() {
+        let mut cache = HashMap::new();
+        let log = RefCell::new(Vec::new());
+        for _ in 0..5 {
+            let out = cached_profile_dirs(&mut cache, "claude", &[7], counting_reader(&log));
+            assert_eq!(out, vec![PathBuf::from("/profiles/7")]);
+        }
+        assert_eq!(log.borrow().len(), 1, "the environment was re-read: {:?}", log.borrow());
+    }
+
+    #[test]
+    fn one_commands_ask_does_not_forget_what_another_command_learned() {
+        // Both adapters ask on every tick. Keyed by PID alone, each ask evicted
+        // the other's entries and every process was re-read every tick.
+        let mut cache = HashMap::new();
+        let log = RefCell::new(Vec::new());
+        cached_profile_dirs(&mut cache, "claude", &[7], counting_reader(&log));
+        cached_profile_dirs(&mut cache, "codex", &[9], counting_reader(&log));
+        cached_profile_dirs(&mut cache, "claude", &[7], counting_reader(&log));
+        cached_profile_dirs(&mut cache, "codex", &[9], counting_reader(&log));
+        assert_eq!(*log.borrow(), vec![7, 9], "an entry was evicted and re-read");
+    }
+
+    #[test]
+    fn a_process_that_has_exited_stops_being_remembered() {
+        let mut cache = HashMap::new();
+        let log = RefCell::new(Vec::new());
+        cached_profile_dirs(&mut cache, "claude", &[7], counting_reader(&log));
+        cached_profile_dirs(&mut cache, "claude", &[], counting_reader(&log));
+        assert!(cache.is_empty(), "a dead process is still cached: {cache:?}");
+    }
+
+    #[test]
+    fn a_process_whose_environment_cannot_be_read_yields_no_directory() {
+        let mut cache = HashMap::new();
+        let out = cached_profile_dirs(&mut cache, "claude", &[7], |_| None);
+        assert!(out.is_empty());
     }
 }
 
@@ -215,9 +405,11 @@ impl ProcessTable for SystemProcessTable {
 #[derive(Default)]
 pub struct FakeProcessTable {
     pub starts: HashMap<u32, String>,
-    /// What each command's running processes report as their profile directory,
-    /// keyed by command — the shape the real table answers in.
-    pub dirs: HashMap<String, Vec<PathBuf>>,
+    /// What a command's running processes report for one variable, keyed by
+    /// `(command, variable)`. Keyed by both so a test can tell an adapter asking
+    /// under the wrong variable from one asking under its own: the wrong
+    /// variable learns nothing, exactly as it would on the machine.
+    pub dirs: HashMap<(String, String), Vec<PathBuf>>,
     pub named: HashMap<String, Vec<u32>>,
     pub open: HashMap<u32, Vec<PathBuf>>,
 }
@@ -229,8 +421,16 @@ impl ProcessTable for FakeProcessTable {
             .filter_map(|p| self.starts.get(p).map(|s| (*p, s.clone())))
             .collect()
     }
-    fn profile_dirs_of_command(&self, command: &str, _var: &str, _default: &Path) -> Vec<PathBuf> {
-        self.dirs.get(command).cloned().unwrap_or_default()
+    fn profile_dirs_of_command(&self, command: &str, var: &str, default: &Path) -> Vec<PathBuf> {
+        if let Some(dirs) = self.dirs.get(&(command.to_string(), var.to_string())) {
+            return dirs.clone();
+        }
+        // A process that overrides nothing is using the default profile; one that
+        // is not running at all reports nothing.
+        match self.named.get(command) {
+            Some(pids) if !pids.is_empty() => vec![default.to_path_buf()],
+            _ => Vec::new(),
+        }
     }
     fn pids_of_command(&self, name: &str) -> Vec<u32> {
         self.named.get(name).cloned().unwrap_or_default()

@@ -14,6 +14,14 @@ use std::path::{Path, PathBuf};
 /// which the app-server never holds — verified live, 0 of its open files.
 const COMMAND: &str = "codex";
 
+/// Where a session records the profile directory it is using, and what it uses
+/// when it records nothing: `~/.codex`.
+///
+/// Named here rather than anywhere in the pet. A pet holding this would need a
+/// new entry per agent, which is the change adding an agent is not supposed to
+/// need — the same reason liveness lives in the adapters.
+const PROFILE_VAR: &str = "CODEX_HOME";
+
 /// Codex sessions, discovered from the processes running them.
 ///
 /// Codex records no PID anywhere — not in its rollout files, not in its database
@@ -51,7 +59,16 @@ impl Adapter for CodexAdapter {
         let Some(home) = std::env::var_os("HOME") else {
             return Vec::new();
         };
-        procs.profile_dirs_of_command(COMMAND, "CODEX_HOME", &PathBuf::from(home).join(".codex"))
+        let default = PathBuf::from(home).join(".codex");
+        // The default first, so it is watched whether or not a process is running
+        // to report it, then whatever the running ones say instead.
+        let mut dirs = vec![default.clone()];
+        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR, &default) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
     }
 
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
@@ -174,20 +191,30 @@ mod tests {
     }
 
     #[test]
-    fn the_adapter_asks_the_process_table_about_codex_and_nothing_else() {
-        // The pet unions whatever comes back, so an adapter asking under another
-        // agent's name would silently watch the wrong directory and never watch
-        // its own.
+    fn a_running_session_reports_the_profile_it_is_using() {
+        // Keyed by command *and* variable: asking under another agent's command,
+        // or under the wrong variable name, learns nothing here — which is what
+        // the machine does too, and is the whole behaviour this adapter adds.
         let mine = PathBuf::from("/tmp/agentpet-codex-home");
         let theirs = PathBuf::from("/tmp/agentpet-claude-home");
         let procs = FakeProcessTable {
+            named: HashMap::from([(COMMAND.to_string(), vec![4790])]),
             dirs: HashMap::from([
-                (COMMAND.to_string(), vec![mine.clone()]),
-                ("claude".to_string(), vec![theirs]),
+                ((COMMAND.to_string(), PROFILE_VAR.to_string()), vec![mine.clone()]),
+                (("claude".to_string(), "CLAUDE_CONFIG_DIR".to_string()), vec![theirs.clone()]),
             ]),
             ..Default::default()
         };
-        assert_eq!(CodexAdapter::new().profile_dirs(&procs), vec![mine]);
+        let out = CodexAdapter::new().profile_dirs(&procs);
+        assert!(out.contains(&mine), "the learned profile is missing: {out:?}");
+        assert!(!out.contains(&theirs), "another agent's profile was claimed: {out:?}");
+    }
+
+    #[test]
+    fn the_default_profile_is_watched_whether_or_not_anything_is_running() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        let out = CodexAdapter::new().profile_dirs(&FakeProcessTable::default());
+        assert_eq!(out, vec![home.join(".codex")]);
     }
 
     #[test]
