@@ -16,8 +16,6 @@ pub struct RegistryEntry {
     pub proc_start: String,
     #[serde(default)]
     pub entrypoint: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
     /// `busy`, `idle`, `waiting` or `shell`. Absent for entrypoints that publish
     /// no status at all.
     ///

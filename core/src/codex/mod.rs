@@ -47,10 +47,6 @@ impl Default for CodexAdapter {
 }
 
 impl Adapter for CodexAdapter {
-    fn agent_id(&self) -> &'static str {
-        "codex"
-    }
-
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
         let pids = procs.pids_of_command(COMMAND);
         if pids.is_empty() {

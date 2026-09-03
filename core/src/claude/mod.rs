@@ -75,10 +75,6 @@ impl Default for ClaudeAdapter {
 }
 
 impl Adapter for ClaudeAdapter {
-    fn agent_id(&self) -> &'static str {
-        "claude"
-    }
-
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
         let mut candidates: Vec<(PathBuf, registry::RegistryEntry)> = Vec::new();
         for profile in profiles {
@@ -231,7 +227,6 @@ fn slug(cwd: &str) -> String {
 mod tests {
     use super::*;
     use crate::procs::FakeProcessTable;
-    use std::collections::HashMap;
 
     fn profile(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join("agentpet-claude-tests").join(name);
@@ -693,8 +688,4 @@ mod tests {
         assert_eq!(project_name("/Users/x/Projects/pet"), "pet");
         assert_eq!(project_name("/Users/x/Projects/pet/"), "pet");
     }
-
-    // Silence unused warnings for the HashMap import in this module's scope.
-    #[allow(dead_code)]
-    fn _unused(_: HashMap<u32, String>) {}
 }

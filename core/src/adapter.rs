@@ -15,8 +15,6 @@ use std::path::PathBuf;
 /// change the first time an agent proved liveness differently, which is exactly
 /// what this release promises it will not do.
 pub trait Adapter {
-    fn agent_id(&self) -> &'static str;
-
     /// Sessions running right now, already reduced to what the pet draws.
     ///
     /// Directories that hold nothing this adapter understands are ignored

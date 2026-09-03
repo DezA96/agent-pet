@@ -28,12 +28,6 @@ pub enum State {
     Unknown,
 }
 
-impl State {
-    /// Whether this state wants something from the user.
-    pub fn wants_attention(self) -> bool {
-        matches!(self, State::Waiting | State::Errored)
-    }
-}
 
 /// One live agent session, already reduced to what the pet draws.
 ///

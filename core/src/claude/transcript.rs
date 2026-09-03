@@ -123,11 +123,6 @@ impl Tailer {
             .insert(path.to_path_buf(), offset + complete_upto as u64);
     }
 
-    pub fn forget(&mut self, path: &Path) {
-        self.offsets.remove(path);
-        self.last_activity.remove(path);
-        self.last_error.remove(path);
-    }
 
     pub fn retain_only(&mut self, keep: &[PathBuf]) {
         self.offsets.retain(|k, _| keep.contains(k));
