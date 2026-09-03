@@ -63,7 +63,7 @@ impl Adapter for CodexAdapter {
         // The default first, so it is watched whether or not a process is running
         // to report it, then whatever the running ones say instead.
         let mut dirs = vec![default.clone()];
-        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR, &default) {
+        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR) {
             if !dirs.contains(&dir) {
                 dirs.push(dir);
             }

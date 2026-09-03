@@ -67,6 +67,9 @@ impl Observer {
     }
 
     pub fn poll(&mut self, procs: &dyn ProcessTable) -> Poll {
+        // Every question this tick asks is answered from one snapshot of the
+        // machine, and this is where that snapshot starts.
+        procs.begin_poll();
         let Some(cfg_path) = config::config_path() else {
             return Poll::failed("cannot locate a home directory".into());
         };
@@ -304,11 +307,15 @@ mod tests {
 
         let procs = FakeProcessTable {
             starts: std::collections::HashMap::from([(900, "Mon Aug 24 04:00:00 2026".to_string())]),
+            polls: Default::default(),
             dirs: std::collections::HashMap::from([(
                 ("claude".to_string(), "CLAUDE_CONFIG_DIR".to_string()),
                 vec![profile],
             )]),
-            named: std::collections::HashMap::from([("codex".to_string(), vec![901])]),
+            named: std::collections::HashMap::from([
+                ("claude".to_string(), vec![900]),
+                ("codex".to_string(), vec![901]),
+            ]),
             open: std::collections::HashMap::from([(
                 901,
                 vec![std::path::PathBuf::from("/nonexistent/rollout-gone.jsonl")],
@@ -368,6 +375,18 @@ mod tests {
             "a live Codex session under a learned profile drew no row: {:?}",
             p.sessions
         );
+    }
+
+    #[test]
+    fn every_poll_tells_the_process_table_to_take_a_fresh_snapshot() {
+        // The table serves one process listing to everything that asks inside a
+        // tick; a poll that failed to say it had begun would let the next tick
+        // answer from the last one, and an exited session would keep its row.
+        let procs = FakeProcessTable::default();
+        let mut obs = Observer::new();
+        obs.poll(&procs);
+        obs.poll(&procs);
+        assert_eq!(procs.polls.get(), 2);
     }
 
     #[test]

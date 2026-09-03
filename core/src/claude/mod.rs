@@ -22,9 +22,12 @@ use std::path::{Path, PathBuf};
 /// Release 001 targets the CLI, which is why this list has one entry.
 const OBSERVABLE_ENTRYPOINTS: &[&str] = &["cli"];
 
-/// The command a Claude Code session runs under, and where it records the
-/// profile it is using. Named here because it is this agent's fact, not the
-/// pet's — `ProcessTable` is asked for both by name and knows neither.
+/// The command a Claude Code session runs under, and the id its rows carry.
+///
+/// One word for both because they are the same word, and writing it twice is how
+/// a rename leaves `agentId` on the wire saying something the pet no longer means.
+/// Named here because it is this agent's fact, not the pet's — `ProcessTable` is
+/// asked by name and knows none.
 const COMMAND: &str = "claude";
 
 /// Where a session records the profile directory it is using, and what it uses
@@ -96,7 +99,7 @@ impl Adapter for ClaudeAdapter {
         // The default first, so it is watched whether or not a process is running
         // to report it, then whatever the running ones say instead.
         let mut dirs = vec![default.clone()];
-        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR, &default) {
+        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR) {
             if !dirs.contains(&dir) {
                 dirs.push(dir);
             }
@@ -217,7 +220,7 @@ impl Adapter for ClaudeAdapter {
             };
 
             out.push(AgentSession {
-                agent_id: "claude".into(),
+                agent_id: COMMAND.into(),
                 session_key: entry.session_id.clone(),
                 project_path: entry.cwd.clone(),
                 display_name: project_name(&entry.cwd),
