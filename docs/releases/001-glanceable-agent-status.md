@@ -1,11 +1,11 @@
 # Release 001: Glanceable Agent Status
 
-Charter: [docs/project-charter.md](../project-charter.md)
+Direction: [docs/project-charter.md](../project-charter.md)
 
 ## Status
-In Progress
+Implementing
 
-## Release Goal
+## Goal
 From any focused window, a single glance shows every live Claude Code CLI and Codex CLI session on the machine — a very short status of what each is currently working on, plus whether it is waiting for input or has errored.
 
 ## Target Users
@@ -20,11 +20,11 @@ The developer (solo), the charter's sole target user, on macOS. No other audienc
 - **C-020 The pet itself** — a drawn creature below the rows, offset by its position on the display, with the status rows as a speech bubble that switches sides at the screen border. (Split from C-005 — see Explicit Scope Changes.)
 - **C-006 One status row per live session** — each live session gets its own row (agent, project, current activity), so concurrent sessions each carry their own clear signal and are distinguishable from one another. (Rescoped — the pet itself moved to C-005; see Explicit Scope Changes.)
 - **C-012 Live-session discovery** — only sessions actually running are shown; ended and stale sessions disappear.
-- **C-014 Add-directory picker** — the watched-directory list is editable from the pet, not only by hand-editing config. (Added mid-release — see Explicit Scope Changes.)
+- **C-014 Add-directory picker** — the watched-directory list is editable from the pet, not only by hand-editing config. (Added mid-release, then dropped — see Explicit Scope Changes.)
 - **C-016 Placeable and controllable pet window** — drag to move, position remembered, menu bar icon for show/hide and quit. (Added mid-release — see Explicit Scope Changes.)
 - **C-017 Status age counts from the real status change** — the age beside a session is time since the status actually changed, not since the pet first looked. (Added mid-release — see Explicit Scope Changes.)
 
-## Release Acceptance Criteria
+## Acceptance Criteria
 - With no terminal visible — whatever window is focused, or none at all — every currently running Claude Code and Codex session that has taken at least one turn is represented on screen. (Amended during story 003 — see Explicit Scope Changes.)
 - For each represented session, a very short status of its current activity is readable without interacting with the pet.
 - A waiting-for-input session and an errored session are each tellable from a working session at a glance, without reading the status text.
@@ -144,4 +144,17 @@ Single-user local release: the developer runs it on their own machine, no rollou
   is thrown away by C-020, since the row indicator lives inside the bubble unchanged; and the release
   keeps moving while the visual work takes the time it needs. C-013's aggregate expression travels with
   the creature into C-020.
-
+- **C-014 add-directory picker dropped** (spec round, story 007). Not a cut for schedule: the work
+  turned out to be already done by other means. C-014 was added at story 001's spec round because live
+  sessions were found under multiple profile directories and a fixed default list could not cover a
+  third. Story 001 then shipped the mechanism that answers it — `profiles.rs` unions the profile
+  directory of every live `claude` process into the candidate list on every tick, read from that
+  process's own `CLAUDE_CONFIG_DIR` — so any running session's directory is watched with no
+  configuration, no restart, and no picker. Story 003 removed the other half: the Codex adapter takes
+  the directory list and never reads it, discovering sessions from open rollout handles instead. A
+  hand-added directory can only ever matter for a session that is not running, and the pet does not
+  draw those. Recorded here rather than left silent because the release committed to the item; no
+  release acceptance criterion refers to it, so none is weakened by the drop. The residual irritation
+  the picker would not have fixed either — no way to see what the pet is watching, or why an expected
+  session is absent — was raised and not carried into a row, on the developer's answer that no session
+  has ever been missing in daily use.
