@@ -161,17 +161,31 @@ Single-user local release: the developer runs it on their own machine, no rollou
   contract every adapter is written against, settled per-agent inside each adapter rather than in the
   pet — the same conclusion story 003 reached about liveness. Story 006 therefore closes with the limit
   recorded rather than hidden, and C-028 carries the fix.
-- **C-014 add-directory picker dropped** (spec round, story 007). Not a cut for schedule: the work
-  turned out to be already done by other means. C-014 was added at story 001's spec round because live
-  sessions were found under multiple profile directories and a fixed default list could not cover a
-  third. Story 001 then shipped the mechanism that answers it — `profiles.rs` unions the profile
-  directory of every live `claude` process into the candidate list on every tick, read from that
-  process's own `CLAUDE_CONFIG_DIR` — so any running session's directory is watched with no
-  configuration, no restart, and no picker. Story 003 removed the other half: the Codex adapter takes
-  the directory list and never reads it, discovering sessions from open rollout handles instead. A
-  hand-added directory can only ever matter for a session that is not running, and the pet does not
-  draw those. Recorded here rather than left silent because the release committed to the item; no
-  release acceptance criterion refers to it, so none is weakened by the drop. The residual irritation
-  the picker would not have fixed either — no way to see what the pet is watching, or why an expected
-  session is absent — was raised and not carried into a row, on the developer's answer that no session
-  has ever been missing in daily use.
+- **C-014 add-directory picker dropped** (spec round, story 007; rationale corrected at preflight run
+  1). Not a cut for schedule: for Claude, the work turned out to be already done by other means. C-014
+  was added at story 001's spec round because live sessions were found under multiple profile
+  directories and a fixed default list could not cover a third. Story 001 then shipped the mechanism
+  that answers it — `profiles.rs` unions the profile directory of every live `claude` process into the
+  candidate list on every tick, read from that process's own `CLAUDE_CONFIG_DIR` — so any running
+  Claude session's directory is watched with no configuration, no restart, and no picker. Recorded
+  here rather than left silent because the release committed to the item; no release acceptance
+  criterion refers to it, so none is weakened by the drop. The residual irritation the picker would
+  not have fixed either — no way to see what the pet is watching, or why an expected session is absent
+  — was raised and not carried into a row, on the developer's answer that no session has ever been
+  missing in daily use.
+
+  What this entry claimed as its second leg was wrong, and preflight run 1 (finding 3) found it: the
+  Codex adapter does read the directory list. `codex/mod.rs:73` skips every candidate rollout that
+  fails `under_any(path, profiles)`, `under_any` exists to "keep discovery to the configured surface",
+  and `codex/mod.rs:284` tests that a rollout outside every watched directory is left alone. The
+  conclusion drawn from that leg — that a hand-added directory can only ever matter for a session that
+  is not running — does not follow, and the case it dismissed is real: `procs.rs` learns
+  `CLAUDE_CONFIG_DIR` and nothing else, so a live Codex CLI session under a non-default `CODEX_HOME`
+  is filtered out, draws no row, and is reachable only by hand-editing
+  `~/.config/agent-pet/config.json`. The drop still stands, on the Claude leg plus daily use: a folder
+  chooser is the wrong shape for that case, which wants the directory learned from the running process
+  the way Claude's already is. That is not new scope and carries no backlog row — this release
+  committed to Codex CLI integration, so a live Codex session the pet cannot draw is its own work
+  unfinished, and it is fixed in place: the profile-directory learn becomes neutral, with each adapter
+  naming its own command and environment variable, which is also what removes the agent name preflight
+  finding 4 reports in `ProcessTable`.
