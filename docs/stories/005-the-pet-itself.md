@@ -331,6 +331,22 @@ across every live session, before I read a single row.
 13. Manual: with an external display connected, park the pet where the bubble extends onto it, then
     disconnect — the bubble re-picks a side on the remaining screen and the creature is where macOS or
     the validity rule left it, per the edge case.
+      - **Unrunnable as written.** Its premise cannot be set up: the bubble can never extend onto a
+        second display. The side rule tests the bubble against a *single* screen's visible frame —
+        `nearestVisible` returns one screen — so as the creature approaches the seam the bubble flips
+        to stay on the screen it is on, and nothing appears on the second display until the creature
+        itself crosses, at which point the whole surface moves at once. Reported by the developer on
+        trying it, and consistent with the rule as specified rather than a defect in it. Carries no
+        `- Method:` because the check as written was never run.
+
+        What it was meant to cover — "given displays change while the pet is running and the bubble's
+        current side no longer fits, then the bubble re-picks its side and the creature does not
+        move" — is still uncovered end to end. `bubbleSide` itself is unit-tested in every direction;
+        what is unverified is the wiring, that a screen-parameter change reaches
+        `revalidatePlacement` and applies the rule. A disconnect is not the only way to change a
+        visible frame: moving the Dock to a side edge shrinks the screen's width and posts the same
+        `didChangeScreenParametersNotification`, which would exercise the wiring without unplugging
+        anything.
 14. Manual: motion — captures a fraction of a second apart show the creature's rhythm matching the most
     urgent dot's; three 90-second CPU samples as in story 004, under 2% of one core.
       - Method: run
