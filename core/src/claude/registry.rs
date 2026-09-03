@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -38,6 +38,27 @@ pub struct RegistryEntry {
     /// other line.
     #[serde(default)]
     pub waiting_for: Option<String>,
+    /// Unix ms of when `status` last actually changed, as the agent recorded it.
+    ///
+    /// The whole point of story 006: the pet's row counts up from this rather than
+    /// from the tick it happened to first read the file, so a session idle for
+    /// ninety-six minutes says so even if the pet started thirty seconds ago.
+    ///
+    /// Read through `Value` rather than straight into `Option<u64>` because this
+    /// field belongs to the agent: a build that wrote it as a string, or as a
+    /// float, would fail the whole entry to parse and cost the row entirely.
+    /// Anything that is not a whole number reads as absent, which falls back to
+    /// first-seen — a weaker age, not a missing session.
+    #[serde(default, deserialize_with = "lenient_ms")]
+    pub status_updated_at: Option<u64>,
+}
+
+/// Read a millisecond timestamp without letting a surprise cost the whole entry.
+fn lenient_ms<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::Number(n)) => n.as_u64(),
+        _ => None,
+    })
 }
 
 pub fn parse(raw: &str) -> Option<RegistryEntry> {
@@ -95,6 +116,57 @@ fn normalise(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// `procStart` — `Mon Aug 24 04:16:25 2026`, in UTC — as unix ms.
+///
+/// Read so the age has something to be checked against. A session's status cannot
+/// have changed before the process publishing it existed, and the process's own
+/// start is the only bound available that is a fact rather than a threshold
+/// somebody chose. `None` for anything unparseable, which simply means no bound
+/// is applied rather than a session being refused.
+pub fn proc_start_ms(raw: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let normalised = normalise(raw);
+    let mut f = normalised.split(' ');
+    let _weekday = f.next()?;
+    let month_name = f.next()?;
+    let month = MONTHS.iter().position(|m| *m == month_name)? as u32 + 1;
+    let day: u32 = f.next()?.parse().ok()?;
+    let mut clock = f.next()?.split(':');
+    let hour: u64 = clock.next()?.parse().ok()?;
+    let minute: u64 = clock.next()?.parse().ok()?;
+    let second: u64 = clock.next()?.parse().ok()?;
+    let year: i64 = f.next()?.parse().ok()?;
+    if clock.next().is_some() || f.next().is_some() {
+        return None;
+    }
+    crate::session::civil_to_ms(year, month, day, hour, minute, second)
+}
+
+impl RegistryEntry {
+    /// When this session's status began, unix ms — or `None` where the agent gave
+    /// nothing usable to date it from.
+    ///
+    /// A `statusUpdatedAt` is usable only alongside a `status`, since otherwise it
+    /// would time a state the pet never read, and only when it is not older than
+    /// the process itself. That second test is what keeps a value in the wrong
+    /// unit off the surface: `statusUpdatedAt` arrives as a bare number with no
+    /// parsing to fail, so seconds where milliseconds were meant reads as 1970 and
+    /// renders as an age of half a million hours — wide enough to push the project
+    /// name out of its own row. Refused rather than clamped: the pet cannot tell
+    /// what the agent meant, and an age counted from first-seen is honest where a
+    /// clamp would assert a precision nobody has.
+    pub fn status_began(&self) -> Option<u64> {
+        let at = self.status_updated_at?;
+        self.status.as_ref()?;
+        match proc_start_ms(&self.proc_start) {
+            Some(started) if at < started => None,
+            _ => Some(at),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,6 +217,85 @@ mod tests {
         let e = parse(HEALTHY).unwrap();
         let table = starts(&[(41173, "Mon Aug 24 00:16:25 2026")]);
         assert!(!is_live(&e, &table));
+    }
+
+    #[test]
+    fn the_status_change_time_is_read() {
+        let e = parse(HEALTHY).unwrap();
+        assert_eq!(e.status_updated_at, Some(1_787_594_586_507));
+    }
+
+    #[test]
+    fn a_missing_or_unusable_status_time_reads_as_absent_and_keeps_the_entry() {
+        // Absent: an older agent, or an entrypoint that publishes no status.
+        let bare = r#"{"pid":1,"sessionId":"s","cwd":"/c","procStart":"x"}"#;
+        assert_eq!(parse(bare).unwrap().status_updated_at, None);
+        // Present but not a whole number. The row must survive; only its age is
+        // weaker, falling back to first-seen.
+        for odd in [r#""1787594586507""#, "null", "1787594586507.5", "[1]", "-1"] {
+            let raw = format!(
+                r#"{{"pid":1,"sessionId":"s","cwd":"/c","procStart":"x","statusUpdatedAt":{odd}}}"#
+            );
+            let e = parse(&raw).unwrap_or_else(|| panic!("entry lost over statusUpdatedAt {odd}"));
+            assert_eq!(e.status_updated_at, None, "for {odd}");
+        }
+    }
+
+    #[test]
+    fn proc_start_reads_as_the_utc_moment_the_process_began() {
+        // The same string the liveness rule compares, now also read as a time.
+        assert_eq!(proc_start_ms("Mon Aug 24 04:16:25 2026"), Some(1_787_544_985_000));
+        // `ps` pads its columns and the agent does not; both spell one moment.
+        assert_eq!(proc_start_ms("  Mon Aug 24  04:16:25 2026  "), Some(1_787_544_985_000));
+        // A single-digit day, which the agent pads to keep the column width — the
+        // form actually on this machine, and the one that would quietly disable
+        // the bound rather than fail anything if it stopped parsing.
+        assert_eq!(proc_start_ms("Wed Sep  2 23:46:55 2026"), Some(1_788_392_815_000));
+        for bad in ["", "Mon Aug 24 04:16:25", "Mon Xxx 24 04:16:25 2026", "not a time"] {
+            assert_eq!(proc_start_ms(bad), None, "for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_status_time_older_than_the_process_is_refused_rather_than_shown() {
+        // The whole reachable case: `statusUpdatedAt` is a bare number, so a value
+        // in the wrong unit fails no parse. Seconds where ms were meant reads as
+        // 1970 and would render as an age of about 496,766 hours — a label wide
+        // enough to squeeze the project name out of its own row.
+        let with = |v: &str| {
+            format!(
+                r#"{{"pid":1,"sessionId":"s","cwd":"/c","procStart":"Mon Aug 24 04:16:25 2026",
+                "status":"busy","statusUpdatedAt":{v}}}"#
+            )
+        };
+        // Unix seconds, not milliseconds.
+        assert_eq!(parse(&with("1787594586")).unwrap().status_began(), None);
+        assert_eq!(parse(&with("0")).unwrap().status_began(), None);
+        // A plausible value, after the process started, is kept.
+        assert_eq!(
+            parse(&with("1787594586507")).unwrap().status_began(),
+            Some(1_787_594_586_507)
+        );
+        // Exactly the process's own start is not "before" it.
+        assert_eq!(
+            parse(&with("1787544985000")).unwrap().status_began(),
+            Some(1_787_544_985_000)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_proc_start_applies_no_bound_rather_than_dropping_the_age() {
+        // No bound available is not evidence against the timestamp.
+        let raw = r#"{"pid":1,"sessionId":"s","cwd":"/c","procStart":"who knows",
+            "status":"busy","statusUpdatedAt":1787594586507}"#;
+        assert_eq!(parse(raw).unwrap().status_began(), Some(1_787_594_586_507));
+    }
+
+    #[test]
+    fn a_status_time_with_no_status_beside_it_is_not_used() {
+        let raw = r#"{"pid":1,"sessionId":"s","cwd":"/c","procStart":"Mon Aug 24 04:16:25 2026",
+            "statusUpdatedAt":1787594586507}"#;
+        assert_eq!(parse(raw).unwrap().status_began(), None);
     }
 
     #[test]

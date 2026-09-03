@@ -58,6 +58,14 @@ pub struct Meta {
     pub cwd: String,
     pub source: Option<String>,
     pub thread_source: Option<String>,
+    /// When the session itself began, unix ms, from line 1's own `timestamp`.
+    ///
+    /// Read for the same reason Claude's `procStart` is: a turn boundary cannot
+    /// have been written before the session that wrote it, so this is the bound a
+    /// nonsense timestamp is caught by — a fact rather than a threshold somebody
+    /// chose. `None` where line 1 carries nothing readable, which applies no bound
+    /// rather than refusing the session.
+    pub began: Option<u64>,
 }
 
 impl Meta {
@@ -104,6 +112,14 @@ pub fn read_meta(path: &Path) -> Option<Meta> {
         cwd: text("cwd")?,
         source: text("source"),
         thread_source: text("thread_source"),
+        // The envelope's `timestamp`, not the payload's: the payload's is when the
+        // session was created and the envelope's is when the line was written, and
+        // the envelope's is the one every other line is dated by, so the bound and
+        // the values it bounds come from one clock.
+        began: v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(crate::session::parse_iso8601_ms),
     })
 }
 
@@ -112,6 +128,23 @@ struct Progress {
     offset: u64,
     state: State,
     activity: Option<String>,
+    state_since: Option<u64>,
+}
+
+/// What one tick learned about a rollout.
+///
+/// A named struct rather than a tuple because story 006 added a third value and
+/// three positional fields at a call site is where a reader starts guessing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Reading {
+    pub state: State,
+    pub activity: Option<String>,
+    /// When the boundary that decided the state was written, unix ms.
+    ///
+    /// `None` when no boundary was found — the state is `Unknown` then, and there
+    /// is no moment to date. Codex timestamps every line it writes, so a boundary
+    /// found by the backscan carries this exactly as one found by the forward tail.
+    pub state_since: Option<u64>,
 }
 
 /// Reads rollouts forward from where it last stopped.
@@ -128,13 +161,30 @@ impl Tailer {
         Self::default()
     }
 
+    /// Drop a boundary time that predates the session that wrote it.
+    ///
+    /// A rollout is self-consistent in practice, so this catches nothing today. It
+    /// exists because the row's age is now agent-supplied data rather than the
+    /// pet's own clock, and an age counted from a moment the session did not exist
+    /// for is worse than one counted from first-seen — the same rule, and the same
+    /// reasoning, as Claude's `procStart` bound.
+    pub fn dated_after(reading: Reading, began: Option<u64>) -> Reading {
+        match (reading.state_since, began) {
+            (Some(since), Some(began)) if since < began => Reading {
+                state_since: None,
+                ..reading
+            },
+            _ => reading,
+        }
+    }
+
     /// This session's turn state and current activity.
     ///
     /// Turn state is the last boundary event seen, not a count: one rollout on
     /// this disk carries 9 `task_started` to 8 `task_complete`, so any pairing
     /// rule is already wrong on real data. A rollout holding no boundary within
     /// the window read stays `Unknown` — never inferred as idle or working.
-    pub fn read(&mut self, path: &Path) -> (State, Option<String>) {
+    pub fn read(&mut self, path: &Path) -> Reading {
         let Ok(mut file) = std::fs::File::open(path) else {
             return self.remembered(path);
         };
@@ -203,17 +253,22 @@ impl Tailer {
         // back as the turn is long. The activity line already read stands: every
         // item in the window came after whatever boundary this finds.
         if fresh && progress.state == State::Unknown && start > 0 {
-            if let Some(state) = last_boundary_before(&mut file, start) {
+            if let Some((state, at)) = last_boundary_before(&mut file, start) {
                 progress.state = state;
+                progress.state_since = at;
             }
         }
         self.remembered(path)
     }
 
-    fn remembered(&self, path: &Path) -> (State, Option<String>) {
+    fn remembered(&self, path: &Path) -> Reading {
         match self.seen.get(path) {
-            Some(p) => (p.state, p.activity.clone()),
-            None => (State::Unknown, None),
+            Some(p) => Reading {
+                state: p.state,
+                activity: p.activity.clone(),
+                state_since: p.state_since,
+            },
+            None => Reading::default(),
         }
     }
 
@@ -227,7 +282,7 @@ impl Tailer {
 /// Reads backward in chunks and takes the newest boundary found, which is the one
 /// that decides the state. `None` means no boundary lies within [`MAX_BACKSCAN`] —
 /// reported as `unknown` rather than guessed at.
-fn last_boundary_before(file: &mut std::fs::File, end: u64) -> Option<State> {
+fn last_boundary_before(file: &mut std::fs::File, end: u64) -> Option<(State, Option<u64>)> {
     let floor = end.saturating_sub(MAX_BACKSCAN);
     let mut hi = end;
     // The head of the chunk just examined: a line straddling the cut, whose start
@@ -249,8 +304,8 @@ fn last_boundary_before(file: &mut std::fs::File, end: u64) -> Option<State> {
         carry = buf[..head_end].to_vec();
 
         let text = String::from_utf8_lossy(&buf[head_end..]);
-        if let Some(state) = text.lines().rev().find_map(boundary_state) {
-            return Some(state);
+        if let Some(found) = text.lines().rev().find_map(boundary_state) {
+            return Some(found);
         }
         hi = lo;
     }
@@ -262,7 +317,7 @@ fn last_boundary_before(file: &mut std::fs::File, end: u64) -> Option<State> {
 /// The substring test is what keeps the backscan cheap: `item_completed` lines
 /// reach tens of KB each and make up nearly every byte of a rollout, and this
 /// rejects them without handing any of it to a JSON parser.
-fn boundary_state(line: &str) -> Option<State> {
+fn boundary_state(line: &str) -> Option<(State, Option<u64>)> {
     if !line.contains("task_started") && !line.contains("task_complete") {
         return None;
     }
@@ -270,11 +325,23 @@ fn boundary_state(line: &str) -> Option<State> {
     if v.get("type").and_then(Value::as_str) != Some("event_msg") {
         return None;
     }
-    match v.get("payload")?.get("type").and_then(Value::as_str) {
-        Some("task_started") => Some(State::Working),
-        Some("task_complete") => Some(State::Idle),
-        _ => None,
-    }
+    let state = match v.get("payload")?.get("type").and_then(Value::as_str) {
+        Some("task_started") => State::Working,
+        Some("task_complete") => State::Idle,
+        _ => return None,
+    };
+    Some((state, boundary_time(&v)))
+}
+
+/// The line's own `timestamp`, which every rollout line carries.
+///
+/// `task_started` also carries a `started_at` inside its payload; it is
+/// deliberately unused. One field read the same way for both boundaries is one
+/// rule, and two would be two rules that have to be kept agreeing.
+fn boundary_time(v: &Value) -> Option<u64> {
+    v.get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(crate::session::parse_iso8601_ms)
 }
 
 /// Fold one rollout line into what is known about the session.
@@ -295,11 +362,15 @@ fn apply(line: &str, progress: &mut Progress) {
     match payload.get("type").and_then(Value::as_str) {
         Some("task_started") => {
             progress.state = State::Working;
+            progress.state_since = boundary_time(&v);
             // A new turn has not done anything yet. Carrying the previous turn's
             // last action forward would put a finished action under a live one.
             progress.activity = None;
         }
-        Some("task_complete") => progress.state = State::Idle,
+        Some("task_complete") => {
+            progress.state = State::Idle;
+            progress.state_since = boundary_time(&v);
+        }
         Some("item_completed") => {
             if let Some(item) = payload.get("item") {
                 if let Some(a) = activity_of(item) {
@@ -336,24 +407,164 @@ mod tests {
         write(name, &(lines.join("\n") + "\n"))
     }
 
+    /// The committed rollouts, reduced from this machine's own `~/.codex/sessions`.
+    fn fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join("codex")
+            .join(name)
+    }
+
     fn meta_line(id: &str, cwd: &str, source: &str, thread_source: &str) -> String {
         format!(
             r#"{{"type":"session_meta","payload":{{"id":"{id}","cwd":"{cwd}","source":{source},"thread_source":"{thread_source}"}}}}"#
         )
     }
 
+    /// `2026-08-25T00:41:35.372Z`, the timestamp both boundary helpers carry.
+    const BOUNDARY_MS: u64 = 1_787_618_495_372;
+
     fn started() -> String {
-        r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"t1"}}"#.into()
+        // Every line the agent writes carries a `timestamp`, and `task_started`
+        // additionally carries `started_at` inside its payload — as unix *seconds*,
+        // an integer, which is how the committed fixture writes it
+        // (`fixtures/codex/cli-user.jsonl` line 2: `"started_at":1787618495`).
+        // A deliberately wrong value in the real shape, so a change that read the
+        // payload field instead of the line's own `timestamp` fails loudly rather
+        // than passing by luck or by type error.
+        r#"{"timestamp":"2026-08-25T00:41:35.372Z","type":"event_msg","payload":{"type":"task_started","turn_id":"t1","started_at":1577836800}}"#.into()
     }
 
     fn complete() -> String {
-        r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}"#.into()
+        r#"{"timestamp":"2026-08-25T00:41:35.372Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"t1"}}"#.into()
     }
 
     fn reasoning(text: &str) -> String {
         format!(
             r#"{{"type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"Reasoning","summary_text":["**{text}**"]}}}}}}"#
         )
+    }
+
+    // MARK: - Where the age counts from (story 006)
+
+    #[test]
+    fn the_session_start_is_read_from_line_one() {
+        // The committed fixture, whose first line is dated 2026-08-25T00:41:35.372Z.
+        let m = read_meta(&fixture_path("cli-user.jsonl")).unwrap();
+        assert_eq!(m.began, Some(BOUNDARY_MS));
+        // A line 1 with no envelope timestamp applies no bound rather than
+        // refusing the session.
+        let bare = read_meta(&write(
+            "meta-no-ts.jsonl",
+            &(meta_line("i", "/c", "\"cli\"", "user") + "\n"),
+        ))
+        .unwrap();
+        assert_eq!(bare.began, None);
+    }
+
+    #[test]
+    fn a_boundary_dated_before_its_own_session_is_refused_not_shown() {
+        let reading = Reading {
+            state: State::Working,
+            activity: None,
+            state_since: Some(1_000),
+        };
+        // Older than the session that wrote it: dropped, so the row falls back to
+        // first-seen rather than counting from a moment the session did not exist.
+        assert_eq!(Tailer::dated_after(reading.clone(), Some(2_000)).state_since, None);
+        // The state itself is never touched by the bound.
+        assert_eq!(Tailer::dated_after(reading.clone(), Some(2_000)).state, State::Working);
+        // At or after the session's start, and with no bound available, it stands.
+        assert_eq!(Tailer::dated_after(reading.clone(), Some(1_000)).state_since, Some(1_000));
+        assert_eq!(Tailer::dated_after(reading.clone(), Some(500)).state_since, Some(1_000));
+        assert_eq!(Tailer::dated_after(reading, None).state_since, Some(1_000));
+    }
+
+    #[test]
+    fn a_boundary_dates_the_state_from_its_own_timestamp() {
+        // Both boundaries, read the same way. `task_started`'s payload also holds
+        // a `started_at`, deliberately unused: one field for both boundaries is
+        // one rule rather than two that must be kept agreeing.
+        for (name, boundary, state) in [
+            ("since-started.jsonl", started(), State::Working),
+            ("since-complete.jsonl", complete(), State::Idle),
+        ] {
+            let p = write(name, &format!("{}\n{boundary}\n", meta_line("i", "/c", "\"cli\"", "user")));
+            let r = Tailer::new().read(&p);
+            assert_eq!(r.state, state);
+            assert_eq!(r.state_since, Some(BOUNDARY_MS), "for {name}");
+        }
+    }
+
+    #[test]
+    fn a_boundary_found_by_the_backscan_is_dated_too() {
+        // The far-boundary path: the turn began outside the first-read window, so
+        // the state comes from `last_boundary_before` rather than the forward
+        // tail. The age must be just as real there — that path is precisely the
+        // long-running turn whose age is worth knowing.
+        let p = dir().join("since-backscan.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "{}", meta_line("i", "/c", "\"cli\"", "user")).unwrap();
+        writeln!(f, "{}", started()).unwrap();
+        let filler = reasoning("Padding written since the turn began");
+        let mut written = 0u64;
+        while written < FIRST_READ_WINDOW * 3 {
+            writeln!(f, "{filler}").unwrap();
+            written += filler.len() as u64 + 1;
+        }
+        f.sync_all().unwrap();
+
+        let r = Tailer::new().read(&p);
+        assert_eq!(r.state, State::Working);
+        assert_eq!(r.state_since, Some(BOUNDARY_MS));
+    }
+
+    #[test]
+    fn a_finished_turn_found_by_the_backscan_is_dated_too() {
+        // The same far-boundary path as above, for `task_complete`. The two share
+        // one code path, but a `task_started`-only test would not catch a change
+        // that dated only the boundary it happened to be written against.
+        let p = dir().join("since-backscan-idle.jsonl");
+        let mut f = std::fs::File::create(&p).unwrap();
+        writeln!(f, "{}", meta_line("i", "/c", "\"cli\"", "user")).unwrap();
+        writeln!(f, "{}", started()).unwrap();
+        writeln!(f, "{}", complete()).unwrap();
+        let filler = reasoning("Padding written after the turn ended");
+        let mut written = 0u64;
+        while written < FIRST_READ_WINDOW * 3 {
+            writeln!(f, "{filler}").unwrap();
+            written += filler.len() as u64 + 1;
+        }
+        f.sync_all().unwrap();
+
+        let r = Tailer::new().read(&p);
+        assert_eq!(r.state, State::Idle);
+        assert_eq!(r.state_since, Some(BOUNDARY_MS));
+    }
+
+    #[test]
+    fn a_rollout_with_no_boundary_has_no_time_to_date() {
+        // `Unknown` and `None` together: there is no moment to count from, and the
+        // adapter falls back to first-seen rather than inventing one.
+        let p = write(
+            "since-none.jsonl",
+            &format!("{}\n{}\n", meta_line("i", "/c", "\"cli\"", "user"), reasoning("Thinking")),
+        );
+        let r = Tailer::new().read(&p);
+        assert_eq!(r.state, State::Unknown);
+        assert_eq!(r.state_since, None);
+    }
+
+    #[test]
+    fn a_boundary_with_an_unreadable_timestamp_still_decides_the_state() {
+        let line = r#"{"timestamp":"whenever","type":"event_msg","payload":{"type":"task_started"}}"#;
+        let p = write(
+            "since-bad-ts.jsonl",
+            &format!("{}\n{line}\n", meta_line("i", "/c", "\"cli\"", "user")),
+        );
+        let r = Tailer::new().read(&p);
+        assert_eq!(r.state, State::Working, "the state was lost with the time");
+        assert_eq!(r.state_since, None);
     }
 
     #[test]
@@ -406,13 +617,13 @@ mod tests {
             &[meta_line("i", "/c", "\"cli\"", "user"), started(), complete(), started()],
         );
         let mut t = Tailer::new();
-        assert_eq!(t.read(&p).0, State::Working);
+        assert_eq!(t.read(&p).state, State::Working);
 
         let p = write_lines(
             "state-idle.jsonl",
             &[meta_line("i", "/c", "\"cli\"", "user"), started(), complete()],
         );
-        assert_eq!(Tailer::new().read(&p).0, State::Idle);
+        assert_eq!(Tailer::new().read(&p).state, State::Idle);
     }
 
     #[test]
@@ -426,7 +637,7 @@ mod tests {
         }
         lines.push(started());
         let p = write_lines("state-mismatch.jsonl", &lines);
-        assert_eq!(Tailer::new().read(&p).0, State::Working);
+        assert_eq!(Tailer::new().read(&p).state, State::Working);
     }
 
     #[test]
@@ -435,15 +646,19 @@ mod tests {
             "state-none.jsonl",
             &[meta_line("i", "/c", "\"cli\"", "user"), reasoning("Thinking")],
         );
-        assert_eq!(Tailer::new().read(&p).0, State::Unknown);
+        assert_eq!(Tailer::new().read(&p).state, State::Unknown);
     }
 
     #[test]
     fn an_unreadable_rollout_is_unknown_not_idle() {
-        assert_eq!(
-            Tailer::new().read(Path::new("/nonexistent/rollout-x.jsonl")),
-            (State::Unknown, None)
-        );
+        // Spelled out rather than compared against `Reading::default()`: both
+        // sides would then derive from the same `#[default]`, and the test would
+        // hold whatever that default became — including `Idle`, which is the one
+        // answer it exists to forbid.
+        let r = Tailer::new().read(Path::new("/nonexistent/rollout-x.jsonl"));
+        assert_eq!(r.state, State::Unknown);
+        assert_eq!(r.activity, None);
+        assert_eq!(r.state_since, None);
     }
 
     #[test]
@@ -457,7 +672,7 @@ mod tests {
                 reasoning("Testing the connection"),
             ],
         );
-        let (state, activity) = Tailer::new().read(&p);
+        let Reading { state, activity, .. } = Tailer::new().read(&p);
         assert_eq!(state, State::Working);
         assert_eq!(activity.as_deref(), Some("Testing the connection"));
     }
@@ -474,7 +689,7 @@ mod tests {
                 started(),
             ],
         );
-        let (state, activity) = Tailer::new().read(&p);
+        let Reading { state, activity, .. } = Tailer::new().read(&p);
         assert_eq!(state, State::Working);
         assert_eq!(activity, None, "a live turn showed a finished turn's action");
     }
@@ -486,16 +701,16 @@ mod tests {
             &[meta_line("i", "/c", "\"cli\"", "user"), started(), reasoning("One")],
         );
         let mut t = Tailer::new();
-        assert_eq!(t.read(&p).1.as_deref(), Some("One"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("One"));
         let after_first = t.seen.get(&p).unwrap().offset;
 
         // Nothing new: the offset does not move and the answer is unchanged.
-        assert_eq!(t.read(&p).1.as_deref(), Some("One"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("One"));
         assert_eq!(t.seen.get(&p).unwrap().offset, after_first);
 
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         writeln!(f, "{}", reasoning("Two")).unwrap();
-        assert_eq!(t.read(&p).1.as_deref(), Some("Two"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("Two"));
         assert!(t.seen.get(&p).unwrap().offset > after_first);
     }
 
@@ -504,10 +719,10 @@ mod tests {
         let head = [meta_line("i", "/c", "\"cli\"", "user"), started(), reasoning("Complete line")].join("\n");
         let p = write("tail-partial.jsonl", &format!("{head}\n{{\"type\":\"event_ms"));
         let mut t = Tailer::new();
-        assert_eq!(t.read(&p).1.as_deref(), Some("Complete line"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("Complete line"));
 
         std::fs::write(&p, format!("{head}\n{}\n", reasoning("Finished line"))).unwrap();
-        assert_eq!(t.read(&p).1.as_deref(), Some("Finished line"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("Finished line"));
     }
 
     #[test]
@@ -515,10 +730,10 @@ mod tests {
         let long = [meta_line("i", "/c", "\"cli\"", "user"), started(), reasoning("Old and long")].join("\n") + "\n";
         let p = write("tail-truncated.jsonl", &long);
         let mut t = Tailer::new();
-        assert_eq!(t.read(&p).1.as_deref(), Some("Old and long"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("Old and long"));
 
         std::fs::write(&p, format!("{}\n{}\n", started(), reasoning("New"))).unwrap();
-        assert_eq!(t.read(&p).1.as_deref(), Some("New"));
+        assert_eq!(t.read(&p).activity.as_deref(), Some("New"));
     }
 
     /// The bounded backward read, on a file far past the window.
@@ -542,7 +757,7 @@ mod tests {
         assert!(len > FIRST_READ_WINDOW, "fixture is not oversized: {len}");
 
         let mut t = Tailer::new();
-        let (state, activity) = t.read(&p);
+        let Reading { state, activity, .. } = t.read(&p);
         assert_eq!(state, State::Working);
         assert_eq!(activity.as_deref(), Some("The newest thing"));
         assert_eq!(t.seen.get(&p).unwrap().offset, len, "the read did not reach EOF");
@@ -569,7 +784,7 @@ mod tests {
         writeln!(f, "{}", reasoning("The newest thing")).unwrap();
         f.sync_all().unwrap();
 
-        let (state, activity) = Tailer::new().read(&p);
+        let Reading { state, activity, .. } = Tailer::new().read(&p);
         assert_eq!(state, State::Working, "a live turn read as unknown");
         assert_eq!(activity.as_deref(), Some("The newest thing"));
     }
@@ -590,7 +805,7 @@ mod tests {
         }
         f.sync_all().unwrap();
 
-        assert_eq!(Tailer::new().read(&p).0, State::Idle);
+        assert_eq!(Tailer::new().read(&p).state, State::Idle);
     }
 
     /// A boundary split across two backscan chunks is still read whole.
@@ -615,7 +830,7 @@ mod tests {
         }
         f.sync_all().unwrap();
 
-        assert_eq!(Tailer::new().read(&p).0, State::Working);
+        assert_eq!(Tailer::new().read(&p).state, State::Working);
     }
 
     /// A rollout with no boundary anywhere is still unknown, not guessed.
@@ -632,7 +847,7 @@ mod tests {
         }
         f.sync_all().unwrap();
 
-        assert_eq!(Tailer::new().read(&p).0, State::Unknown);
+        assert_eq!(Tailer::new().read(&p).state, State::Unknown);
     }
 
     #[test]

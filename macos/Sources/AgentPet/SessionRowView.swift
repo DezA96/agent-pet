@@ -3,9 +3,9 @@ import AppKit
 /// One live session.
 ///
 /// Layout is: a state mark, which agent and which project, then the state or the
-/// activity line, then a count-up of seconds since the status was observed. The
-/// age is always on screen so staleness is visible directly rather than inferred
-/// from a tuned threshold.
+/// activity line, then a count-up of how long that state has been true. The age is
+/// always on screen so staleness is visible directly rather than inferred from a
+/// tuned threshold.
 final class SessionRowView: NSView {
     private let indicator: StateIndicatorView
     private let nameLabel = Style.label("", font: Style.rowFont, color: Style.primary)
@@ -124,11 +124,11 @@ final class SessionRowView: NSView {
         }
     }
 
-    /// Seconds since this status was observed, recomputed every second.
+    /// How long the displayed state has been true, recomputed every second.
+    ///
+    /// The tiers and the future-time clamp live in `PetState` beside the state
+    /// rules, where they can be tested without a window.
     func refreshAge() {
-        let seconds = max(0, Int(Date().timeIntervalSince(session.observedDate).rounded()))
-        ageLabel.stringValue = seconds < 60
-            ? "\(seconds)s"
-            : "\(seconds / 60)m \(seconds % 60)s"
+        ageLabel.stringValue = ageText(since: session.statusSinceDate)
     }
 }

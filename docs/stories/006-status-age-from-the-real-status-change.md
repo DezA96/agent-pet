@@ -4,7 +4,7 @@
 001 — Glanceable Agent Status ([plan](../releases/001-glanceable-agent-status.md)); backlog row C-017.
 
 ## Status
-Ready
+Implementing
 
 ## User Outcome
 As the developer, I want the age beside a session to say how long that session has actually been in the state
@@ -53,6 +53,11 @@ the count every time I relaunch the pet.
 - Given a status older than a day, then there is no day unit: it reads `51h 20m 14s`.
 - Given an agent-supplied time in the future — a clock change, or skew — then the age reads `0s`
   rather than counting down or showing a negative number.
+- Given an agent-supplied time older than the session it belongs to — a value in the wrong unit, which
+  `statusUpdatedAt` arrives as a bare number and so fails no parse — then it is refused and the age
+  falls back to first-seen, rather than rendering an age of half a million hours. Added during build:
+  before this story the age came from the pet's own clock and could not be absurd, so making it
+  agent-supplied is what created the case. (See Amended During Build.)
 
 ## Excluded From This Change
 - The activity line: what it says, where it comes from, and how often it changes. Untouched, on the
@@ -64,6 +69,13 @@ the count every time I relaunch the pet.
 - A day unit in the age, and any coarsening that drops seconds. Settled against: seconds always show.
 - Any change to the row's layout, the state dot, the creature, or the bubble.
 - C-015 (persisting learned profile directories) — unrelated, and still a candidate.
+- Holding the age correct across a state the pet polled straight past. Criterion 7 requires the age to
+  hold while the displayed state holds, and the same hold also discards a genuinely newer agent time
+  when a turn boundary, an error recovery, or an unreadable first reading falls entirely between two
+  polls. Established across this story's three review rounds, not at spec time. Every criterion here is
+  met as written; fixing this needs `AgentSession` to distinguish a state that has run since T from one
+  that restarted at T, which is a change to the contract every adapter is written against. Recorded as
+  C-028 and expanded into release 001 rather than folded in here.
 
 ## Edge Cases
 - **`busy` to `shell`.** The agent's status changed, the displayed state did not. The age holds.
@@ -93,25 +105,97 @@ the count every time I relaunch the pet.
 
 1. `RegistryEntry` parses `statusUpdatedAt`, and reads as absent when the field is missing or is not a
    number. Unit (Rust).
+      - Method: run
+      - Observed: `claude::registry::tests::the_status_change_time_is_read` and
+        `::a_missing_or_unusable_status_time_reads_as_absent_and_keeps_the_entry`
+        (`core/src/claude/registry.rs`). The second is the load-bearing one: the field is read through
+        a `lenient_ms` deserializer (`registry.rs:57`) rather than straight into `Option<u64>`, so a
+        string, a float, a null, an array or a negative reads as absent and the entry survives. Read
+        into `Option<u64>` directly, any of those would have failed the whole entry to parse and cost
+        the row, not just its age.
 2. A Claude session with `status` and `statusUpdatedAt` reports `status_since` equal to that value, for
    `busy`, `idle`, `waiting` and `shell`. Unit (Rust).
+      - Method: run
+      - Observed: `claude::tests::a_status_dates_the_row_from_the_agents_own_status_change`
+        (`core/src/claude/mod.rs`), which loops all four statuses through the real adapter.
 3. An errored Claude session reports `status_since` taken from the `isApiErrorMessage` entry's
    `timestamp`, staged so that `statusUpdatedAt` holds a different, later value — the dialog-after-error
    case — and the error's time is the one that wins. Unit (Rust).
+      - Method: run
+      - Observed: `claude::tests::an_errored_row_dates_the_error_not_the_registry_status`. The fixture
+        is the exact case: `status: "waiting"`, `waitingFor: "dialog open"`,
+        `statusUpdatedAt: 1787599999999`, and an error entry timestamped `2026-08-25T00:41:35.372Z`.
+        The row reads `Errored` and dates the error, not the dialog. Also
+        `claude::transcript::tests::an_error_carries_the_time_of_the_entry_it_stopped_on`, and
+        `::an_error_with_no_readable_timestamp_still_reports_the_error` — an unreadable time costs the
+        age, never the state.
 4. A Codex session reports `status_since` from its boundary line's `timestamp`, for `task_started` and
    for `task_complete`, and by the backscan path as well as the forward tail. Unit (Rust).
+      - Method: run
+      - Observed: `codex::rollout::tests::a_boundary_dates_the_state_from_its_own_timestamp` (both
+        boundaries) and `::a_boundary_found_by_the_backscan_is_dated_too`, which pads past
+        `FIRST_READ_WINDOW * 3` so the state can only come from `last_boundary_before`. The
+        `task_started` fixture carries a deliberately wrong `started_at` (`2020-01-01`) alongside its
+        real `timestamp`, so a build that read the payload field instead would fail rather than pass by
+        luck. Also `::a_rollout_with_no_boundary_has_no_time_to_date` and
+        `::a_boundary_with_an_unreadable_timestamp_still_decides_the_state`.
 5. A displayed state unchanged across two ticks keeps its earlier `status_since` even though the
    agent moved something underneath it — `busy` then `shell`, and a `waiting` session whose
    `waitingFor` reason changes. Unit (Rust).
+      - Method: run
+      - Observed: `tests::a_status_moving_under_an_unchanged_state_does_not_move_the_age`
+        (`core/src/lib.rs`), covering both. The pin key is now the displayed state alone; it was
+        `(state, activity)` before, which is what made check 6's old behaviour.
 6. A session with no agent-supplied time keeps today's behaviour: first-seen on the first tick, pinned
    across later ticks while state and activity hold. Unit (Rust) — the existing `lib.rs` tests, still
    passing against the renamed field.
+      - Method: run
+      - Observed: `tests::an_unchanged_status_keeps_counting_up_instead_of_restarting`,
+        `::a_changed_state_takes_the_agents_new_time` and `::a_session_that_left_and_returned_starts_fresh`,
+        all still passing. One test in that group was inverted deliberately and renamed:
+        `a_changed_activity_restarts_the_count` is now
+        `a_changed_activity_does_not_restart_the_count`, which is the criterion this story adds. Two
+        more cover the "no agent time at all" path end to end:
+        `claude::tests::a_session_the_agent_timestamped_nothing_for_falls_back_to_this_tick` asserts a
+        registry file carrying `statusUpdatedAt` but no `status` is dated from this tick, never from a
+        status the pet never read.
 7. A `status_since` in the future renders as `0s`. Unit (Swift).
+      - Method: run
+      - Observed: `aStatusTimeInTheFutureReadsAsZeroRatherThanCountingDown`
+        (`macos/Tests/PetStateTests/PetStateTests.swift`), covering `-1`, `-90_000`, and a start an hour
+        ahead of `now`.
 8. Age formatting at each tier and at both boundaries: `0s`, `47s`, `59s`, `1m 00s`, `2m 05s`,
    `59m 59s`, `1h 00m 00s`, `1h 03m 47s`, `51h 20m 14s`. Unit (Swift).
+      - Method: run
+      - Observed: `theAgeReadsInTiersThatOnlyWidenWhenAUnitIsGained` covers every value listed;
+        `aVeryOldStatusKeepsCountingInHoursRatherThanGainingADayUnit` covers `51h 20m 14s`. The
+        formatter is `ageText` in `macos/Sources/PetState/Age.swift`, put in `PetState` rather than in
+        the row view so it is reachable without a window — the same reason the state priority lives
+        there.
 9. No occurrence of `observed_at` or `observedAt` remains anywhere in `core/src`, `macos/Sources`,
    `macos/Tests`, `core/examples` or `tools/`. Mechanical pass (grep).
+      - Method: mechanical pass
+      - Observed: `grep -rn "observedAt\|observedDate\|observed_at" macos core tools` returns exactly
+        one line, `core/src/session.rs:66`, inside the doc comment on `status_since` explaining why the
+        field is no longer called that. Prose, not an identifier: no code, no JSON key and no test
+        refers to the old name. Named here rather than removed, because the sentence is the record of
+        the rename and a grep hit that a reader can resolve in one line is worth more than a silent
+        comment.
 10. `./test.sh` passes. Run.
+      - Method: run
+      - Observed: passes. 137 Rust tests (up from 116) and the full Swift suite, including the four new
+        `PetState` age tests. `./build.sh` also completes, which is what proves the Swift half compiles
+        at all — SwiftPM builds only `PetGeometry` and `PetState`, so the app's own sources reach a
+        compiler only through `build.sh`. Run three times over to confirm no ordering flakiness after a
+        pre-existing test-isolation defect was fixed (see check 6's neighbours and the note below).
+        The count rose from 116 to 137 across three review rounds and the fix that followed them, which added tests for the FFI key and
+        state-vocabulary contract, the date parser's year bound and its rejection of signed components,
+        the Codex backscan's `task_complete` dating, both adapters' last hop into `status_since`, and an
+        unrecognised Claude status; the third added no behaviour, only tests for branches that survived
+        mutation — the leap-second clamp, a fraction longer than a `u64`, the Swift rounding, and Codex's
+        own fallback to first-seen — and replaced one assertion that had become tautological. The Swift
+        suite is 47 tests. A limit the rounds established rather than a defect against this story's
+        criteria is recorded as C-028 and scoped into this release; see `## Excluded From This Change`.
 11. The C-017 observation, re-run: a Claude session left idle for a known span, the pet quit and
     relaunched, and the row's age read against that span rather than restarting at `0s`. Manual.
 12. A Claude session working through several tool calls: the activity line changes as before and names
@@ -121,6 +205,29 @@ the count every time I relaunch the pet.
     Manual.
 14. A row whose project name sits near its wrap point does not re-wrap as the age ticks within a tier,
     and the dot and age stay level with the name's first line as story 004 requires. Manual.
+15. A status time older than its own session is refused and the row falls back to first-seen, for both
+    agents: Claude against `procStart`, Codex against its rollout's first line. Unit (Rust).
+      - Method: run
+      - Observed: `claude::registry::tests::a_status_time_older_than_the_process_is_refused_rather_than_shown`
+        (unix seconds where ms were meant, and `0`, both refused; a plausible value and a value exactly
+        at the process start both kept), `::an_unreadable_proc_start_applies_no_bound_rather_than_dropping_the_age`,
+        `::proc_start_reads_as_the_utc_moment_the_process_began`, and
+        `codex::rollout::tests::a_boundary_dated_before_its_own_session_is_refused_not_shown` plus
+        `::the_session_start_is_read_from_line_one`, which reads the bound off the committed fixture.
+
+## Amended During Build
+
+- **A status time older than its own session is refused** (build, after the third review round). The
+  spec clamped the future direction and said nothing about the past, because before this story the age
+  came from `now_ms()` and could not be absurd. Making it agent-supplied created the case:
+  `statusUpdatedAt` arrives as a bare number with no parsing to fail, so seconds where milliseconds
+  were meant reads as 1970 and renders as `496766h 00m 01s` — and `SessionRowView` gives the age label
+  `.required` compression resistance against the project name's `.defaultLow`, so the name is what
+  gives way. Treated as this story's own defect rather than a candidate for later, because the story is
+  what made it reachable. The bound is each session's own start — Claude's `procStart`, Codex's first
+  rollout line — so it is a fact rather than a threshold somebody chose, and both were already being
+  read for other reasons. Refused rather than clamped: the pet cannot tell what the agent meant, and
+  first-seen is honest where a clamp would assert a precision nobody has.
 
 ## Design Requirement
 - Design: none — routine work following an existing pattern. Each adapter already reads its agent's own

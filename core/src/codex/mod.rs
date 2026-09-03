@@ -89,7 +89,8 @@ impl Adapter for CodexAdapter {
             seen.push(meta.id.clone());
             held.push(path.clone());
 
-            let (state, activity) = self.tailer.read(path);
+            let reading = rollout::Tailer::dated_after(self.tailer.read(path), meta.began);
+            let state = reading.state;
             out.push(AgentSession {
                 agent_id: COMMAND.into(),
                 session_key: meta.id,
@@ -98,8 +99,11 @@ impl Adapter for CodexAdapter {
                 state,
                 // A finished turn's last action is stale the moment it ends, and
                 // an idle row showing it would read as busy at a glance.
-                activity: (state == State::Working).then_some(activity).flatten(),
-                observed_at: observed,
+                activity: (state == State::Working).then_some(reading.activity).flatten(),
+                // The turn boundary's own time where there was a boundary; where
+                // there was none the state is `Unknown` and there is nothing to
+                // date, so the row keeps the pre-006 first-seen behaviour.
+                status_since: reading.state_since.unwrap_or(observed),
             });
         }
 
@@ -180,6 +184,38 @@ mod tests {
         // The real session's last turn boundary is `task_complete`.
         assert_eq!(out[0].state, State::Idle);
         assert_eq!(out[0].activity, None, "an idle row must not show stale activity");
+    }
+
+    #[test]
+    fn a_row_dates_itself_from_the_boundary_in_the_real_rollout() {
+        // The last hop of the chain: the tailer's boundary time actually reaching
+        // `AgentSession.status_since`, checked against the committed fixture rather
+        // than a synthetic line. That rollout's final boundary is the
+        // `task_complete` on line 28, `2026-08-25T00:46:02.774Z`.
+        let (root, paths) = profile("since", &["cli-user.jsonl"]);
+        let out = CodexAdapter::new().live_sessions(&[root], &procs(&[(4790, paths)]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, State::Idle);
+        assert_eq!(out[0].status_since, 1_787_618_762_774);
+    }
+
+    #[test]
+    fn a_row_with_no_boundary_to_date_falls_back_to_this_tick() {
+        // The other half of the dating rule, and the half Claude has its own test
+        // for: no boundary means no moment to count from, so the row keeps the
+        // pre-006 first-seen behaviour rather than inventing one.
+        let (root, paths) = profile("since-none", &["cli-user.jsonl"]);
+        // Truncate to the meta line alone: a real session before its first turn
+        // boundary, which is a live row with nothing yet to date.
+        let raw = std::fs::read_to_string(&paths[0]).unwrap();
+        let meta_only = raw.lines().next().unwrap().to_string() + "\n";
+        std::fs::write(&paths[0], meta_only).unwrap();
+
+        let before = crate::session::now_ms();
+        let out = CodexAdapter::new().live_sessions(&[root], &procs(&[(4790, paths)]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, State::Unknown);
+        assert!(out[0].status_since >= before, "a row with no boundary dated itself from one");
     }
 
     /// The invariant that keeps a format change from silently doubling every row.
