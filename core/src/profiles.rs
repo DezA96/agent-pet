@@ -1,5 +1,4 @@
 use crate::config::{self, Config};
-use crate::procs::ProcessTable;
 use std::path::PathBuf;
 
 /// Every directory worth looking in this tick.
@@ -10,8 +9,10 @@ use std::path::PathBuf;
 /// tick with no restart and no configuration.
 ///
 /// Three sources, unioned: the defaults, whatever the user put in the config file,
-/// and the profile directory of every `claude` process running right now.
-pub fn candidate_directories(cfg: &Config, procs: &dyn ProcessTable) -> Vec<PathBuf> {
+/// and `learned` — what each adapter's own running processes reported. This
+/// function names no agent and reads no process: which processes to ask, and what
+/// to ask them, is each adapter's business, and the pet only unions the answers.
+pub fn candidate_directories(cfg: &Config, learned: &[PathBuf]) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut push = |p: PathBuf| {
         // Resolve where possible so two spellings of one directory collapse.
@@ -27,8 +28,8 @@ pub fn candidate_directories(cfg: &Config, procs: &dyn ProcessTable) -> Vec<Path
     for d in &cfg.watch_directories {
         push(config::expand_tilde(d));
     }
-    for d in procs.claude_profile_dirs() {
-        push(d);
+    for d in learned {
+        push(d.clone());
     }
     out
 }
@@ -36,19 +37,11 @@ pub fn candidate_directories(cfg: &Config, procs: &dyn ProcessTable) -> Vec<Path
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::procs::FakeProcessTable;
-
-    fn procs(dirs: Vec<PathBuf>) -> FakeProcessTable {
-        FakeProcessTable {
-            dirs,
-            ..Default::default()
-        }
-    }
 
     #[test]
     fn defaults_are_watched_with_no_configuration() {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
-        let out = candidate_directories(&Config::default(), &procs(vec![]));
+        let out = candidate_directories(&Config::default(), &[]);
         let has = |p: PathBuf| {
             let p = std::fs::canonicalize(&p).unwrap_or(p);
             out.contains(&p)
@@ -61,7 +54,7 @@ mod tests {
     fn a_directory_learned_from_a_live_process_is_included() {
         let learned = std::env::temp_dir().join("agentpet-learned-profile");
         std::fs::create_dir_all(&learned).unwrap();
-        let out = candidate_directories(&Config::default(), &procs(vec![learned.clone()]));
+        let out = candidate_directories(&Config::default(), std::slice::from_ref(&learned));
         let learned = std::fs::canonicalize(&learned).unwrap();
         assert!(out.contains(&learned));
     }
@@ -73,7 +66,7 @@ mod tests {
         let cfg = Config {
             watch_directories: vec![shared.to_string_lossy().into_owned()],
         };
-        let out = candidate_directories(&cfg, &procs(vec![shared.clone()]));
+        let out = candidate_directories(&cfg, std::slice::from_ref(&shared));
         let shared = std::fs::canonicalize(&shared).unwrap();
         assert_eq!(out.iter().filter(|p| **p == shared).count(), 1);
     }

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
@@ -16,11 +16,19 @@ pub trait ProcessTable {
     /// session dead.
     fn start_times_utc(&self, pids: &[u32]) -> HashMap<u32, String>;
 
-    /// Profile directories belonging to `claude` processes running right now.
+    /// Profile directories of every running process named `command`, read from
+    /// each process's own `var`, and `default` for one that sets none.
+    ///
+    /// Neutral in the same way `pids_of_command` is, and for the same reason: the
+    /// caller names the command, the variable and where a process that overrides
+    /// nothing keeps its profile, so no agent's name enters this trait. Which
+    /// three words to pass is the one agent-specific fact here, and it belongs to
+    /// the adapter that owns the agent — the same conclusion story 003 reached
+    /// about liveness.
     ///
     /// A session started under a profile the pet has never seen becomes visible
     /// through this, with no configuration and no restart.
-    fn claude_profile_dirs(&self) -> Vec<PathBuf>;
+    fn profile_dirs_of_command(&self, command: &str, var: &str, default: &Path) -> Vec<PathBuf>;
 
     /// PIDs of every running process whose command is `name`.
     ///
@@ -46,7 +54,9 @@ pub trait ProcessTable {
 /// immediately, which is what keeps a session launched moments ago visible.
 #[derive(Default)]
 pub struct SystemProcessTable {
-    dir_cache: Mutex<HashMap<u32, Option<PathBuf>>>,
+    /// Keyed by command as well as PID: two adapters ask about two different
+    /// commands, and one asking must not evict what the other learned.
+    dir_cache: Mutex<HashMap<(String, u32), Option<PathBuf>>>,
 }
 
 impl SystemProcessTable {
@@ -54,21 +64,25 @@ impl SystemProcessTable {
         Self::default()
     }
 
-    /// Read `CLAUDE_CONFIG_DIR` out of one process's environment.
-    fn profile_dir_of(&self, pid: u32) -> Option<PathBuf> {
+    /// Read one process's profile directory out of its own environment.
+    ///
+    /// `None` only where the environment could not be read at all; a process that
+    /// sets nothing is using `default`, which is an answer rather than a failure.
+    fn profile_dir_of(&self, pid: u32, var: &str, default: &Path) -> Option<PathBuf> {
         // `ps e` prints the environment only when a PID is named explicitly.
         let out = Command::new("ps")
             .args(["eww", "-o", "command=", "-p", &pid.to_string()])
             .output()
             .ok()?;
         let env = String::from_utf8_lossy(&out.stdout);
+        let prefix = format!("{var}=");
         match env
             .split_whitespace()
-            .find_map(|t| t.strip_prefix("CLAUDE_CONFIG_DIR="))
+            .find_map(|t| t.strip_prefix(&prefix))
         {
             Some(dir) => Some(PathBuf::from(dir)),
             // No override means the process is using the default profile.
-            None => std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")),
+            None => Some(default.to_path_buf()),
         }
     }
 }
@@ -161,22 +175,24 @@ impl ProcessTable for SystemProcessTable {
         out
     }
 
-    fn claude_profile_dirs(&self) -> Vec<PathBuf> {
-        let live_pids = self.pids_of_command("claude");
+    fn profile_dirs_of_command(&self, command: &str, var: &str, default: &Path) -> Vec<PathBuf> {
+        let live_pids = self.pids_of_command(command);
 
         let Ok(mut cache) = self.dir_cache.lock() else {
             return Vec::new();
         };
-        // Processes that have exited stop being worth remembering.
-        cache.retain(|pid, _| live_pids.contains(pid));
+        // Processes that have exited stop being worth remembering, and only this
+        // command's entries are this call's to forget.
+        cache.retain(|(c, pid), _| c != command || live_pids.contains(pid));
 
         let mut dirs = Vec::new();
         for pid in live_pids {
-            let dir = match cache.get(&pid) {
+            let key = (command.to_string(), pid);
+            let dir = match cache.get(&key) {
                 Some(known) => known.clone(),
                 None => {
-                    let found = self.profile_dir_of(pid);
-                    cache.insert(pid, found.clone());
+                    let found = self.profile_dir_of(pid, var, default);
+                    cache.insert(key, found.clone());
                     found
                 }
             };
@@ -199,7 +215,9 @@ impl ProcessTable for SystemProcessTable {
 #[derive(Default)]
 pub struct FakeProcessTable {
     pub starts: HashMap<u32, String>,
-    pub dirs: Vec<PathBuf>,
+    /// What each command's running processes report as their profile directory,
+    /// keyed by command — the shape the real table answers in.
+    pub dirs: HashMap<String, Vec<PathBuf>>,
     pub named: HashMap<String, Vec<u32>>,
     pub open: HashMap<u32, Vec<PathBuf>>,
 }
@@ -211,8 +229,8 @@ impl ProcessTable for FakeProcessTable {
             .filter_map(|p| self.starts.get(p).map(|s| (*p, s.clone())))
             .collect()
     }
-    fn claude_profile_dirs(&self) -> Vec<PathBuf> {
-        self.dirs.clone()
+    fn profile_dirs_of_command(&self, command: &str, _var: &str, _default: &Path) -> Vec<PathBuf> {
+        self.dirs.get(command).cloned().unwrap_or_default()
     }
     fn pids_of_command(&self, name: &str) -> Vec<u32> {
         self.named.get(name).cloned().unwrap_or_default()

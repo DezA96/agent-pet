@@ -15,6 +15,20 @@ use std::path::PathBuf;
 /// change the first time an agent proved liveness differently, which is exactly
 /// what this release promises it will not do.
 pub trait Adapter {
+    /// Directories this agent's own running processes say to watch this tick.
+    ///
+    /// Asked before `live_sessions`, and unioned into the profiles every adapter
+    /// then receives. Here rather than in the pet for the same reason liveness is:
+    /// the variable a session records its profile in is this agent's own fact —
+    /// `CLAUDE_CONFIG_DIR` for one, `CODEX_HOME` for the next — and a pet that
+    /// owned it would need a new pet-level method per agent, which is exactly
+    /// what this release promises adding an agent does not require.
+    ///
+    /// Empty is a normal answer: an agent with nothing running, or one whose
+    /// profile cannot be learned from a process, adds nothing to the defaults and
+    /// whatever the user configured.
+    fn profile_dirs(&self, procs: &dyn ProcessTable) -> Vec<PathBuf>;
+
     /// Sessions running right now, already reduced to what the pet draws.
     ///
     /// Directories that hold nothing this adapter understands are ignored

@@ -22,6 +22,11 @@ use std::path::{Path, PathBuf};
 /// Release 001 targets the CLI, which is why this list has one entry.
 const OBSERVABLE_ENTRYPOINTS: &[&str] = &["cli"];
 
+/// The command a Claude Code session runs under, and where it records the
+/// profile it is using. Named here because it is this agent's fact, not the
+/// pet's — `ProcessTable` is asked for both by name and knows neither.
+const COMMAND: &str = "claude";
+
 pub struct ClaudeAdapter {
     tailer: transcript::Tailer,
     /// Resolved transcript path per session, so the project directories are
@@ -75,6 +80,13 @@ impl Default for ClaudeAdapter {
 }
 
 impl Adapter for ClaudeAdapter {
+    fn profile_dirs(&self, procs: &dyn ProcessTable) -> Vec<PathBuf> {
+        let Some(home) = std::env::var_os("HOME") else {
+            return Vec::new();
+        };
+        procs.profile_dirs_of_command(COMMAND, "CLAUDE_CONFIG_DIR", &PathBuf::from(home).join(".claude"))
+    }
+
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
         let mut candidates: Vec<(PathBuf, registry::RegistryEntry)> = Vec::new();
         for profile in profiles {
@@ -227,6 +239,20 @@ fn slug(cwd: &str) -> String {
 mod tests {
     use super::*;
     use crate::procs::FakeProcessTable;
+
+    #[test]
+    fn the_adapter_asks_the_process_table_about_claude_and_nothing_else() {
+        let mine = PathBuf::from("/tmp/agentpet-claude-home");
+        let theirs = PathBuf::from("/tmp/agentpet-codex-home");
+        let procs = FakeProcessTable {
+            dirs: std::collections::HashMap::from([
+                (COMMAND.to_string(), vec![mine.clone()]),
+                ("codex".to_string(), vec![theirs]),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(ClaudeAdapter::new().profile_dirs(&procs), vec![mine]);
+    }
 
     fn profile(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join("agentpet-claude-tests").join(name);

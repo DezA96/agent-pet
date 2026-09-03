@@ -47,6 +47,13 @@ impl Default for CodexAdapter {
 }
 
 impl Adapter for CodexAdapter {
+    fn profile_dirs(&self, procs: &dyn ProcessTable) -> Vec<PathBuf> {
+        let Some(home) = std::env::var_os("HOME") else {
+            return Vec::new();
+        };
+        procs.profile_dirs_of_command(COMMAND, "CODEX_HOME", &PathBuf::from(home).join(".codex"))
+    }
+
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
         let pids = procs.pids_of_command(COMMAND);
         if pids.is_empty() {
@@ -164,6 +171,23 @@ mod tests {
             open: pids.iter().cloned().collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_adapter_asks_the_process_table_about_codex_and_nothing_else() {
+        // The pet unions whatever comes back, so an adapter asking under another
+        // agent's name would silently watch the wrong directory and never watch
+        // its own.
+        let mine = PathBuf::from("/tmp/agentpet-codex-home");
+        let theirs = PathBuf::from("/tmp/agentpet-claude-home");
+        let procs = FakeProcessTable {
+            dirs: HashMap::from([
+                (COMMAND.to_string(), vec![mine.clone()]),
+                ("claude".to_string(), vec![theirs]),
+            ]),
+            ..Default::default()
+        };
+        assert_eq!(CodexAdapter::new().profile_dirs(&procs), vec![mine]);
     }
 
     #[test]
