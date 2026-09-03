@@ -160,6 +160,13 @@ across every live session, before I read a single row.
 - **The aggregate state is computed in the Swift surface, not the Rust core.** It is a rendering
   concern over the session list the pet already receives, and the FFI payload does not change, so no
   adapter is touched. The priority function is pure and lives where the Swift tests can reach it.
+- **A process-wide mouse-moved monitor**, added at the build and recorded here at its close rather
+  than settled up front. Letting clicks through the transparent band beside the creature turns out to
+  need `ignoresMouseEvents` toggled from the pointer's position — declining the point in `hitTest`
+  looks like it should do the job and does not, measured — so the app installs an `NSEvent` global
+  monitor paired with a local one, each being blind to what the other sees. It watches `.mouseMoved`
+  only, which needs no Accessibility permission the way key events would, and it is torn down while
+  the pet is hidden.
 - **No change** to the Rust core, the FFI contract, the session payload, or
   `~/.config/agent-pet/config.json`.
 
