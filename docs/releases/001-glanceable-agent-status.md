@@ -23,6 +23,7 @@ The developer (solo), the charter's sole target user, on macOS. No other audienc
 - **C-014 Add-directory picker** — the watched-directory list is editable from the pet, not only by hand-editing config. (Added mid-release, then dropped — see Explicit Scope Changes.)
 - **C-016 Placeable and controllable pet window** — drag to move, position remembered, menu bar icon for show/hide and quit. (Added mid-release — see Explicit Scope Changes.)
 - **C-017 Status age counts from the real status change** — the age beside a session is time since the status actually changed, not since the pet first looked. (Added mid-release — see Explicit Scope Changes.)
+- **C-028 The status age survives a state the pet polled straight past** — a row never counts from a moment that has stopped being true, whichever agent it belongs to. (Added mid-release — see Explicit Scope Changes.)
 
 ## Acceptance Criteria
 - With no terminal visible — whatever window is focused, or none at all — every currently running Claude Code and Codex session that has taken at least one turn is represented on screen. (Amended during story 003 — see Explicit Scope Changes.)
@@ -144,6 +145,22 @@ Single-user local release: the developer runs it on their own machine, no rollou
   is thrown away by C-020, since the row indicator lives inside the bubble unchanged; and the release
   keeps moving while the visual work takes the time it needs. C-013's aggregate expression travels with
   the creature into C-020.
+- **Added C-028, a proper fix for the age pin** (build review, story 006). Conscious expansion, taken
+  with the release's last planned story already built and reviewed. Story 006 makes the age count from
+  the agent's own record of when a status began, and holds that number still for as long as the
+  displayed state holds — which its criterion 7 requires, so a `busy` session dropping into `shell`
+  does not snap to `0s` over a change the user cannot see. Three review rounds established that the
+  same hold also discards a *genuinely* newer time: a turn boundary crossed entirely between two
+  two-second polls, an error that recovered and recurred inside one interval, and a timestamp that was
+  unreadable on a row's first tick and readable afterwards. Each leaves a row counting from a moment
+  that is no longer true, which is the exact failure this release added C-017 to remove — a glanceable
+  surface stating a false age is worse than stating none. Expanded rather than backlogged for that
+  reason, and because the release's own goal is a glance that can be trusted. Not folded into story
+  006, which meets every criterion it was written against: the fix needs `AgentSession` to distinguish
+  a state that has run since T from one that restarted at T, and that is a change to the single
+  contract every adapter is written against, settled per-agent inside each adapter rather than in the
+  pet — the same conclusion story 003 reached about liveness. Story 006 therefore closes with the limit
+  recorded rather than hidden, and C-028 carries the fix.
 - **C-014 add-directory picker dropped** (spec round, story 007). Not a cut for schedule: the work
   turned out to be already done by other means. C-014 was added at story 001's spec round because live
   sessions were found under multiple profile directories and a fixed default list could not cover a

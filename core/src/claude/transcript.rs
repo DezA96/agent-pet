@@ -27,6 +27,13 @@ pub struct Tailer {
 pub struct ApiError {
     /// The HTTP status the agent recorded, where it recorded one.
     pub status: Option<u64>,
+    /// When the entry the session stopped on was written, unix ms.
+    ///
+    /// Not `statusUpdatedAt`: the two name different facts. Errored outranks every
+    /// registry status, so a session that errors and then has a dialog opened on it
+    /// still reads errored while `statusUpdatedAt` has moved on to the dialog. The
+    /// age has to date the error, which is what this carries.
+    pub at: Option<u64>,
 }
 
 impl ApiError {
@@ -150,6 +157,10 @@ fn error_in_line(line: &str) -> Option<Option<ApiError>> {
     }
     Some(Some(ApiError {
         status: v.get("apiErrorStatus").and_then(Value::as_u64),
+        at: v
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(crate::session::parse_iso8601_ms),
     }))
 }
 
@@ -330,6 +341,39 @@ mod tests {
         writeln!(f, "{}", tool_line("Bash", json!({"description": "Two"}))).unwrap();
         assert_eq!(t.activity(&p).as_deref(), Some("Two"));
         assert!(t.offsets.get(&p).copied().unwrap() > after_first);
+    }
+
+    #[test]
+    fn an_error_carries_the_time_of_the_entry_it_stopped_on() {
+        let line = json!({
+            "type": "assistant",
+            "isApiErrorMessage": true,
+            "apiErrorStatus": 529,
+            "timestamp": "2026-08-25T00:41:35.372Z",
+        })
+        .to_string();
+        let p = write_transcript("errored-at.jsonl", &[line]);
+        let mut t = Tailer::new();
+        let e = t.error(&p).expect("the error was not seen");
+        assert_eq!(e.status, Some(529));
+        assert_eq!(e.at, Some(1_787_618_495_372));
+        assert_eq!(e.line(), "Error: 529");
+    }
+
+    #[test]
+    fn an_error_with_no_readable_timestamp_still_reports_the_error() {
+        // The age falls back to first-seen; the state must not.
+        let missing = json!({"type": "assistant", "isApiErrorMessage": true}).to_string();
+        let unreadable = json!({
+            "type": "assistant", "isApiErrorMessage": true, "timestamp": "yesterday",
+        })
+        .to_string();
+        for (name, line) in [("no-ts.jsonl", missing), ("bad-ts.jsonl", unreadable)] {
+            let p = write_transcript(name, &[line]);
+            let e = Tailer::new().error(&p).expect("the error was lost");
+            assert_eq!(e.at, None);
+            assert_eq!(e.line(), "Errored");
+        }
     }
 
     #[test]

@@ -49,9 +49,9 @@ impl Poll {
 pub struct Observer {
     adapters: Vec<Box<dyn Adapter + Send>>,
     procs: SystemProcessTable,
-    /// What each session last reported, and when that reading first appeared.
-    /// Keyed by session, holding (state, activity, first seen).
-    previous: std::collections::HashMap<String, (session::State, Option<String>, u64)>,
+    /// The state each session last displayed, and the time the row was counting
+    /// from while it displayed it. Keyed by session key.
+    previous: std::collections::HashMap<String, (session::State, u64)>,
 }
 
 impl Observer {
@@ -85,7 +85,7 @@ impl Observer {
             sessions.extend(adapter.live_sessions(&dirs, procs));
         }
 
-        self.age_unchanged_statuses(&mut sessions);
+        self.pin_unchanged_states(&mut sessions);
 
         // A displayed name is not an identifier; make sure two rows never look
         // like the same session.
@@ -105,26 +105,31 @@ impl Observer {
 }
 
 impl Observer {
-    /// Keep `observed_at` pinned to when a status first appeared.
+    /// Hold `status_since` still for as long as the displayed state holds still.
     ///
-    /// The row counts up from this, so re-stamping it every tick would reset the
-    /// counter every couple of seconds and it could never show a status's real
-    /// age. A reading is "the same" when both the state and the activity line are
-    /// unchanged; either one moving is a new status and restarts the count.
-    fn age_unchanged_statuses(&mut self, sessions: &mut [AgentSession]) {
+    /// The age answers one question — how long has what is on screen been true —
+    /// so it may only move when the screen does. Two things move underneath it
+    /// that the user cannot see, and both are pinned here rather than in either
+    /// adapter, because both are about the *displayed* state and the pet owns
+    /// that: the agent's status changing without the pet's state changing
+    /// (`busy` to `shell`, both drawn as working, whose `statusUpdatedAt` would
+    /// otherwise snap the row to `0s`), and the activity line changing within a
+    /// turn (which before story 006 restarted the count on every tool call, so
+    /// the number measured the last tool rather than the turn).
+    ///
+    /// The same pin also carries the fallback: a session whose agent timestamped
+    /// nothing arrives stamped `now` every tick, and this holds it at the first
+    /// tick that saw the reading — exactly the pre-006 behaviour, which is what
+    /// the story asks for wherever there is no real answer.
+    fn pin_unchanged_states(&mut self, sessions: &mut [AgentSession]) {
         for s in sessions.iter_mut() {
-            match self.previous.get(&s.session_key) {
-                Some((state, activity, first_seen))
-                    if *state == s.state && *activity == s.activity =>
-                {
-                    s.observed_at = *first_seen;
+            if let Some((state, since)) = self.previous.get(&s.session_key) {
+                if *state == s.state {
+                    s.status_since = *since;
                 }
-                _ => {}
             }
-            self.previous.insert(
-                s.session_key.clone(),
-                (s.state, s.activity.clone(), s.observed_at),
-            );
+            self.previous
+                .insert(s.session_key.clone(), (s.state, s.status_since));
         }
         // A session that has gone starts fresh if it ever comes back.
         let live: Vec<String> = sessions.iter().map(|s| s.session_key.clone()).collect();
@@ -201,7 +206,7 @@ mod tests {
             display_name: "p".into(),
             state,
             activity: activity.map(str::to_string),
-            observed_at: at,
+            status_since: at,
         }
     }
 
@@ -209,41 +214,62 @@ mod tests {
     fn an_unchanged_status_keeps_counting_up_instead_of_restarting() {
         let mut obs = Observer::new();
         let mut first = vec![sample("s1", State::Working, Some("Reading a.md"), 1_000)];
-        obs.age_unchanged_statuses(&mut first);
-        assert_eq!(first[0].observed_at, 1_000);
+        obs.pin_unchanged_states(&mut first);
+        assert_eq!(first[0].status_since, 1_000);
 
         // Next tick, same status, later clock. The age must not reset.
         let mut second = vec![sample("s1", State::Working, Some("Reading a.md"), 3_000)];
-        obs.age_unchanged_statuses(&mut second);
-        assert_eq!(second[0].observed_at, 1_000, "an unchanged status restarted its counter");
+        obs.pin_unchanged_states(&mut second);
+        assert_eq!(second[0].status_since, 1_000, "an unchanged status restarted its counter");
     }
 
     #[test]
-    fn a_changed_activity_restarts_the_count() {
+    fn a_changed_activity_does_not_restart_the_count() {
+        // Story 006: the age measures the turn, not the time since the last tool
+        // call. Before it, this was the behaviour that made a working row's number
+        // reset every few seconds.
         let mut obs = Observer::new();
-        obs.age_unchanged_statuses(&mut vec![sample("s1", State::Working, Some("Reading a.md"), 1_000)]);
+        obs.pin_unchanged_states(&mut vec![sample("s1", State::Working, Some("Reading a.md"), 1_000)]);
         let mut next = vec![sample("s1", State::Working, Some("Editing b.md"), 3_000)];
-        obs.age_unchanged_statuses(&mut next);
-        assert_eq!(next[0].observed_at, 3_000);
+        obs.pin_unchanged_states(&mut next);
+        assert_eq!(next[0].status_since, 1_000);
     }
 
     #[test]
-    fn a_changed_state_restarts_the_count() {
+    fn a_status_moving_under_an_unchanged_state_does_not_move_the_age() {
+        // `busy` to `shell`: the agent's status changed and its `statusUpdatedAt`
+        // with it, but both are drawn as working, so the user saw no change.
         let mut obs = Observer::new();
-        obs.age_unchanged_statuses(&mut vec![sample("s1", State::Working, None, 1_000)]);
+        obs.pin_unchanged_states(&mut vec![sample("s1", State::Working, None, 1_000)]);
+        let mut shell = vec![sample("s1", State::Working, None, 8_000)];
+        obs.pin_unchanged_states(&mut shell);
+        assert_eq!(shell[0].status_since, 1_000);
+
+        // The same for a waiting session whose `waitingFor` reason changes.
+        let mut obs = Observer::new();
+        obs.pin_unchanged_states(&mut vec![sample("s2", State::Waiting, Some("dialog open"), 1_000)]);
+        let mut reason = vec![sample("s2", State::Waiting, Some("input needed"), 8_000)];
+        obs.pin_unchanged_states(&mut reason);
+        assert_eq!(reason[0].status_since, 1_000);
+    }
+
+    #[test]
+    fn a_changed_state_takes_the_agents_new_time() {
+        let mut obs = Observer::new();
+        obs.pin_unchanged_states(&mut vec![sample("s1", State::Working, None, 1_000)]);
         let mut next = vec![sample("s1", State::Idle, None, 3_000)];
-        obs.age_unchanged_statuses(&mut next);
-        assert_eq!(next[0].observed_at, 3_000);
+        obs.pin_unchanged_states(&mut next);
+        assert_eq!(next[0].status_since, 3_000);
     }
 
     #[test]
     fn a_session_that_left_and_returned_starts_fresh() {
         let mut obs = Observer::new();
-        obs.age_unchanged_statuses(&mut vec![sample("s1", State::Idle, None, 1_000)]);
-        obs.age_unchanged_statuses(&mut vec![]);
+        obs.pin_unchanged_states(&mut vec![sample("s1", State::Idle, None, 1_000)]);
+        obs.pin_unchanged_states(&mut vec![]);
         let mut back = vec![sample("s1", State::Idle, None, 9_000)];
-        obs.age_unchanged_statuses(&mut back);
-        assert_eq!(back[0].observed_at, 9_000);
+        obs.pin_unchanged_states(&mut back);
+        assert_eq!(back[0].status_since, 9_000);
     }
 
     #[test]
@@ -298,6 +324,49 @@ mod tests {
         let back: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(back.get("ok").unwrap().is_boolean());
         assert!(back.get("sessions").unwrap().is_array());
+    }
+
+    #[test]
+    fn every_key_a_session_row_is_decoded_by_is_on_the_wire() {
+        // The test above polls an empty machine, so it never sees a session object
+        // and cannot catch a renamed key. Swift's `AgentSession` lives in the
+        // `AgentPet` module, which `Package.swift` deliberately keeps out of
+        // SwiftPM, so nothing on that side compiles against this contract either —
+        // a key renamed on one side and not the other would reach the surface as
+        // an empty pet with a decode error, and only a manual run would show it.
+        let p = Poll {
+            ok: true,
+            sessions: vec![sample("s1", State::Working, Some("Reading a.md"), 1_000)],
+            error: None,
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        let row = &serde_json::from_str::<serde_json::Value>(&json).unwrap()["sessions"][0];
+        for key in [
+            "agentId",
+            "sessionKey",
+            "projectPath",
+            "displayName",
+            "state",
+            "activity",
+            "statusSince",
+        ] {
+            assert!(row.get(key).is_some(), "{key} is missing from {json}");
+        }
+        assert_eq!(row["statusSince"], 1_000);
+        // The state's *vocabulary*, not just its presence. Swift maps any word it
+        // does not recognise to `unknown` rather than throwing, so losing the
+        // lowercase rename would turn every row grey with no decode error, no test
+        // failure and no symptom to chase — a quieter failure than a missing key.
+        assert_eq!(row["state"], "working");
+        for (state, word) in [
+            (State::Idle, "idle"),
+            (State::Waiting, "waiting"),
+            (State::Errored, "errored"),
+            (State::Unknown, "unknown"),
+        ] {
+            let one = serde_json::to_value(sample("s", state, None, 0)).unwrap();
+            assert_eq!(one["state"], word);
+        }
     }
 
     #[test]

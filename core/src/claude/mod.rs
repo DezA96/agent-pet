@@ -149,6 +149,26 @@ impl Adapter for ClaudeAdapter {
                     .and_then(|p| self.tailer.error(p))
             };
 
+            // Where the age counts from, before the pin in `lib.rs` has its say.
+            //
+            // Two sources, never mixed. An errored row dates the entry the session
+            // stopped on; every other row dates the registry status — and only when
+            // a `status` was actually read, since `statusUpdatedAt` beside no status
+            // would be timing a state the pet never saw. Neither available leaves
+            // `observed`, which is exactly the pre-006 behaviour.
+            //
+            // A status this build does not recognise counts as read: the row shows
+            // `Unknown`, and its age is how long the agent has been in whatever it
+            // is in. That is a different fact from Codex's `Unknown`, which means no
+            // boundary was found at all and so has nothing to date. The two adapters
+            // look inconsistent and are not — one read something it could not name,
+            // the other read nothing.
+            let status_since = match &failure {
+                Some(err) => err.at,
+                None => entry.status_began(),
+            }
+            .unwrap_or(observed);
+
             let (state, activity) = match (failure, state) {
                 (Some(err), _) => (State::Errored, Some(err.line())),
                 // The agent's own wording for what it is blocked on.
@@ -178,7 +198,7 @@ impl Adapter for ClaudeAdapter {
                 display_name: project_name(&entry.cwd),
                 state,
                 activity,
-                observed_at: observed,
+                status_since,
             });
         }
 
@@ -314,7 +334,7 @@ mod tests {
     fn an_entrypoint_this_release_does_not_know_is_not_shown() {
         // The point of an allowlist: the next entrypoint nobody has heard of yet
         // stays out until it is taught, rather than arriving as an unreadable row.
-        let a = profile("dir-future");
+        let a = profile("dir-future-entrypoint");
         write_session(&a, 111, "sess-future", "/Users/x/nu", "Mon Aug 24 04:00:00 2026", r#","entrypoint":"claude-something-new","status":"busy""#);
         let procs = table(&[(111, "Mon Aug 24 04:00:00 2026")]);
         assert!(ClaudeAdapter::new().live_sessions(&[a], &procs).is_empty());
@@ -398,6 +418,109 @@ mod tests {
 
     // One line each: a transcript is JSONL, and a fixture that wraps would be read
     // as several unparseable fragments rather than one entry.
+    // MARK: - Where the age counts from (story 006)
+
+    #[test]
+    fn a_status_dates_the_row_from_the_agents_own_status_change() {
+        // Not from this tick. The whole defect C-017 was raised for: a session
+        // idle since long before the pet started must say so.
+        for (pid, status) in [(300u32, "busy"), (301, "idle"), (302, "waiting"), (303, "shell")] {
+            let a = profile(&format!("dir-since-{status}"));
+            let start = "Mon Aug 24 04:00:00 2026";
+            write_session(
+                &a,
+                pid,
+                &format!("sess-{status}"),
+                "/Users/x/since",
+                start,
+                &format!(r#","entrypoint":"cli","status":"{status}","statusUpdatedAt":1787594586507"#),
+            );
+            let out = ClaudeAdapter::new().live_sessions(&[a], &table(&[(pid, start)]));
+            assert_eq!(out.len(), 1, "no row for status {status}");
+            assert_eq!(out[0].status_since, 1_787_594_586_507, "for status {status}");
+        }
+    }
+
+    #[test]
+    fn an_errored_row_dates_the_error_not_the_registry_status() {
+        // Errored, then a dialog opened on it: the row still reads errored because
+        // errored outranks every status, so its age must still date the error while
+        // `statusUpdatedAt` has moved on to the dialog. The two sources are not
+        // interchangeable, and this is the case that proves it.
+        let a = profile("dir-errored-since");
+        let cwd = "/Users/x/errored";
+        let start = "Mon Aug 24 04:00:00 2026";
+        write_session(
+            &a,
+            310,
+            "sess-err",
+            cwd,
+            start,
+            r#","entrypoint":"cli","status":"waiting","waitingFor":"dialog open","statusUpdatedAt":1787599999999"#,
+        );
+        write_transcript(
+            &a,
+            cwd,
+            "sess-err",
+            &[r#"{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":529,"timestamp":"2026-08-25T00:41:35.372Z","message":{"role":"assistant","content":[]}}"#],
+        );
+
+        let out = ClaudeAdapter::new().live_sessions(&[a], &table(&[(310, start)]));
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].state, State::Errored);
+        assert_eq!(out[0].status_since, 1_787_618_495_372, "the row dated the dialog, not the error");
+    }
+
+    #[test]
+    fn an_errored_row_whose_error_carries_no_time_falls_back_to_this_tick() {
+        // The error must still decide the state; only the age gives way. Dating it
+        // from `statusUpdatedAt` instead would put the dialog's time on the error's
+        // row, which is the exact confusion the two sources exist to avoid.
+        let a = profile("dir-errored-no-time");
+        let cwd = "/Users/x/errored-bare";
+        let start = "Mon Aug 24 04:00:00 2026";
+        write_session(&a, 311, "sess-err-bare", cwd, start,
+            r#","entrypoint":"cli","status":"idle","statusUpdatedAt":1787599999999"#);
+        write_transcript(&a, cwd, "sess-err-bare", &[API_ERROR_529]);
+
+        let before = crate::session::now_ms();
+        let out = ClaudeAdapter::new().live_sessions(&[a], &table(&[(311, start)]));
+        assert_eq!(out[0].state, State::Errored);
+        assert_eq!(out[0].activity.as_deref(), Some("Error: 529"));
+        assert!(out[0].status_since >= before, "the row dated the registry status");
+    }
+
+    #[test]
+    fn an_unrecognised_status_is_unknown_but_still_dated_from_the_agents_time() {
+        // The agent published a status and said when it changed; this build simply
+        // cannot name it. The row is honest about the state and honest about how
+        // long it has held — unlike the no-status case below, where nothing was read.
+        let a = profile("dir-unknown-status-time");
+        let start = "Mon Aug 24 04:00:00 2026";
+        write_session(&a, 321, "sess-hib", "/Users/x/hib", start,
+            r#","entrypoint":"cli","status":"hibernating","statusUpdatedAt":1787594586507"#);
+        let out = ClaudeAdapter::new().live_sessions(&[a], &table(&[(321, start)]));
+        assert_eq!(out[0].state, State::Unknown);
+        assert_eq!(out[0].status_since, 1_787_594_586_507);
+    }
+
+    #[test]
+    fn a_session_the_agent_timestamped_nothing_for_falls_back_to_this_tick() {
+        // `statusUpdatedAt` is read only where a `status` was read with it: beside
+        // no status there is no status whose age it would be.
+        let a = profile("dir-no-status-time");
+        let start = "Mon Aug 24 04:00:00 2026";
+        write_session(&a, 320, "sess-bare", "/Users/x/bare", start,
+            r#","entrypoint":"cli","statusUpdatedAt":1787594586507"#);
+        let before = crate::session::now_ms();
+        let out = ClaudeAdapter::new().live_sessions(&[a], &table(&[(320, start)]));
+        assert_eq!(out[0].state, State::Unknown);
+        assert!(
+            out[0].status_since >= before,
+            "an unknown state dated itself from a status the pet never read"
+        );
+    }
+
     const API_ERROR_529: &str = r#"{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":529,"error":"server_error","message":{"role":"assistant","content":[{"type":"text","text":"API Error: 529 Overloaded."}]}}"#;
     const API_ERROR_NO_CODE: &str =
         r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant","content":[]}}"#;

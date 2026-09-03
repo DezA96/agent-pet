@@ -7,10 +7,12 @@ struct AgentSession: Decodable, Equatable {
     let displayName: String
     let state: SessionState
     let activity: String?
-    /// Unix milliseconds. The row counts up from here.
-    let observedAt: Double
+    /// Unix milliseconds of when the displayed state began. The row counts up
+    /// from here — the agent's own record of the change wherever it kept one, and
+    /// only otherwise when the pet first saw the reading.
+    let statusSince: Double
 
-    var observedDate: Date { Date(timeIntervalSince1970: observedAt / 1000) }
+    var statusSinceDate: Date { Date(timeIntervalSince1970: statusSince / 1000) }
 }
 
 struct Poll: Decodable {
