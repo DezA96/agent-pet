@@ -129,7 +129,7 @@ impl CommandRunner for SystemCommands {
     }
 }
 
-/// Talks to `ps`, through a [`CommandRunner`].
+/// Talks to `ps`, through a `CommandRunner`.
 ///
 /// Caches each process's profile directory by PID. A running process cannot
 /// change its own environment, so re-reading it every tick spends battery to

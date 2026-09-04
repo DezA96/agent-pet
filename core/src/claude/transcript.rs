@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Transcripts are never re-read whole: this project's own is already 102 KB and
 /// growing, and the largest Codex rollout on disk is 74 MB. First sight reads at
-/// most [`tail::FIRST_READ_WINDOW`] from the end, as the Codex reader does; every
+/// most `tail::FIRST_READ_WINDOW` from the end, as the Codex reader does; every
 /// tick after seeks to the remembered offset and reads only what is new.
 #[derive(Default)]
 pub struct Tailer {
