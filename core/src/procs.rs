@@ -283,6 +283,11 @@ impl ProcessTable for SystemProcessTable {
 /// extra directory scanned: a row still needs that agent's own liveness proof and
 /// its own file shapes, so a directory nobody's session lives in produces
 /// nothing. Ruling it out needs `KERN_PROCARGS2`, which hands back argc.
+///
+/// The same missing delimiter cuts a value short the other way: a directory
+/// whose path holds a space and then a segment shaped like `a=b` ends at that
+/// segment, and the pet watches a path that does not exist. Shipped with in
+/// release 001 and recorded as C-029; `KERN_PROCARGS2` is the fix for both.
 fn dir_in_environment(text: &str, var: &str) -> Option<PathBuf> {
     let prefix = format!("{var}=");
     let tokens: Vec<&str> = text.split_whitespace().collect();
