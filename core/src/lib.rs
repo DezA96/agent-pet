@@ -12,6 +12,7 @@ pub mod config;
 pub mod procs;
 pub mod profiles;
 pub mod session;
+mod tail;
 
 use adapter::Adapter;
 use procs::{ProcessTable, SystemProcessTable};

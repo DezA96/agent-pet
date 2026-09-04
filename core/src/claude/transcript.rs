@@ -1,27 +1,16 @@
 use crate::session::truncate_activity as truncate;
+use crate::tail;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-/// How far back from the end of an unseen transcript to read.
-///
-/// The same window the Codex reader uses, for the same reason: reading a whole
-/// file on first sight runs on the thread drawing the surface, and at startup
-/// that is every live session at once. Everything the pet derives from a
-/// transcript is at its tail — the activity line is the newest tool call, the
-/// error verdict the newest substantive entry — so the tail is enough. The cost
-/// accepted is an error older than this much bookkeeping going unseen on first
-/// sight; the next entry the session writes is read as it lands. Preflight run 1,
-/// finding 5: the Claude side read the whole file on a size nothing enforced.
-const FIRST_READ_WINDOW: u64 = 256 * 1024;
-
 /// Reads transcripts forward from where it last stopped.
 ///
 /// Transcripts are never re-read whole: this project's own is already 102 KB and
 /// growing, and the largest Codex rollout on disk is 74 MB. First sight reads at
-/// most [`FIRST_READ_WINDOW`] from the end; every tick after seeks to the
-/// remembered offset and reads only what is new.
+/// most [`tail::FIRST_READ_WINDOW`] from the end, as the Codex reader does; every
+/// tick after seeks to the remembered offset and reads only what is new.
 #[derive(Default)]
 pub struct Tailer {
     offsets: HashMap<PathBuf, u64>,
@@ -104,7 +93,7 @@ impl Tailer {
         let fresh = known.is_none_or(|o| o > len);
         let mut offset = match known {
             Some(o) if !fresh => o,
-            _ => len.saturating_sub(FIRST_READ_WINDOW),
+            _ => tail::first_sight_start(len),
         };
         if fresh {
             self.last_activity.remove(path);
@@ -122,17 +111,12 @@ impl Tailer {
             return;
         }
 
-        // Landing mid-file lands mid-line; that fragment is not parseable JSON and
-        // is dropped rather than guessed at.
+        // Landing mid-file lands mid-line.
         if fresh && offset > 0 {
-            match buf.iter().position(|b| *b == b'\n') {
-                Some(i) => {
-                    offset += i as u64 + 1;
-                    buf.drain(..=i);
-                }
-                // A window holding no line break at all is one line longer than
-                // the window, still being written. Nothing this tick; the next
-                // reads from the end, as the Codex reader does.
+            match tail::drop_leading_fragment(&mut buf) {
+                Some(dropped) => offset += dropped,
+                // Nothing this tick; the next reads from the end, as the Codex
+                // reader does.
                 None => {
                     self.offsets.insert(path.to_path_buf(), len);
                     return;
@@ -281,6 +265,7 @@ fn salient_argument(input: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tail::FIRST_READ_WINDOW;
     use serde_json::json;
 
     #[test]
