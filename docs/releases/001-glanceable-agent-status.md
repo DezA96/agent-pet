@@ -3,7 +3,7 @@
 Direction: [docs/project-charter.md](../project-charter.md)
 
 ## Status
-Implementing
+Shipped
 
 ## Goal
 From any focused window, a single glance shows every live Claude Code CLI and Codex CLI session on the machine — a very short status of what each is currently working on, plus whether it is waiting for input or has errored.
@@ -23,7 +23,7 @@ The developer (solo), the charter's sole target user, on macOS. No other audienc
 - **C-014 Add-directory picker** — the watched-directory list is editable from the pet, not only by hand-editing config. (Added mid-release, then dropped — see Explicit Scope Changes.)
 - **C-016 Placeable and controllable pet window** — drag to move, position remembered, menu bar icon for show/hide and quit. (Added mid-release — see Explicit Scope Changes.)
 - **C-017 Status age counts from the real status change** — the age beside a session is time since the status actually changed, not since the pet first looked. (Added mid-release — see Explicit Scope Changes.)
-- **C-028 The status age survives a state the pet polled straight past** — a row never counts from a moment that has stopped being true, whichever agent it belongs to. (Added mid-release — see Explicit Scope Changes.)
+- **C-028 The status age survives a state the pet polled straight past** — a row never counts from a moment that has stopped being true, whichever agent it belongs to. (Added mid-release, then cut at ship — see Explicit Scope Changes.)
 
 ## Acceptance Criteria
 - With no terminal visible — whatever window is focused, or none at all — every currently running Claude Code and Codex session that has taken at least one turn is represented on screen. (Amended during story 003 — see Explicit Scope Changes.)
@@ -193,3 +193,25 @@ Single-user local release: the developer runs it on their own machine, no rollou
   and the pet unions what the adapters ask for without knowing whose directories they are. That is also
   what removes the agent name preflight finding 4 reports. A live Codex session under a custom
   `CODEX_HOME` draws a row with no config file, and a test asserts it.
+- **C-028 cut from release 001** (ship, 2026-09-03). The release was brought to `/ship` with C-028
+  still in Planned Work, its row `Scoped`, no story written and no commit touching the pin: the
+  entry above records why the fix was expanded in, and nothing after it records it built or dropped.
+  The developer first recalled it as finished; the repo shows that what was finished is story 006,
+  whose three behaviours — the age dates the status change rather than the last tool call, does not
+  restart each tick, and reads right for a session that predates the pet — are all C-017. C-028 is
+  the residual story 006 named under its own exclusions: a turn boundary crossed entirely between two
+  polls leaves the state token unchanged, so the pin discards the newer time and the row counts from
+  the previous turn. Cut rather than built, on the developer's decision at ship: the release's
+  acceptance criteria are met without it, and the README already states the limit plainly (a fix
+  taken after preflight, so the user-facing record does not overclaim). The row returns to
+  `Candidate` with no target; the gap is a known one, recorded in three places, not a silent one.
+- **Release strategy changed at ship** (ship, 2026-09-03). The strategy above says a single-user
+  local release with no rollout stages. At ship the developer chose instead to open the repository
+  as public `DezA96/agent-pet` under the MIT licence and publish the release as GitHub release
+  `release-001`, with the unsigned app bundle attached as a zip. The target user is unchanged — no
+  second audience is being served, and the acceptance criteria and success measures still read
+  against the developer's own use — but the artifact is now reachable by anyone, so the deploy runbook was
+  written for that process rather than for build-and-open. Before publishing, the developer's home
+  path was scrubbed from the fixtures and tests and the history rewritten, which was safe because
+  no remote or clone existed yet. Rollback of a release is withdrawing the tag and the release; a
+  downloaded zip cannot be recalled.

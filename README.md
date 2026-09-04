@@ -87,6 +87,15 @@ replace the list entirely:
 | `Sessions unreadable` | discovery itself failed; the reason is written to the log |
 | `No agents running` | discovery worked and nothing is running |
 
+## Install
+
+Download `AgentPet-release-001-arm64.zip` from the
+[latest release](https://github.com/DezA96/agent-pet/releases/latest), unzip it, and move
+`AgentPet.app` wherever you like. The app is not signed, so the first time, right-click it and
+choose Open; after that a double-click works. Apple silicon and macOS 13 or later.
+
+To build it yourself instead, see below.
+
 ## Build and run
 
 Needs Rust and the Xcode Command Line Tools. No Xcode, no package manager.
