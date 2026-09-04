@@ -49,6 +49,11 @@ impl Poll {
 pub struct Observer {
     adapters: Vec<Box<dyn Adapter + Send>>,
     procs: SystemProcessTable,
+    /// Where the pet's own config file lives, or `None` where no home directory
+    /// could be found to put it under. Resolved once: a home directory does not
+    /// move while the pet runs, and a poll that resolved it itself could only be
+    /// tested against whatever file the developer's machine happened to hold.
+    config: Option<std::path::PathBuf>,
     /// The state each session last displayed, and the time the row was counting
     /// from while it displayed it. Keyed by session key.
     previous: std::collections::HashMap<String, (session::State, u64)>,
@@ -56,6 +61,11 @@ pub struct Observer {
 
 impl Observer {
     pub fn new() -> Self {
+        Self::reading(config::config_path())
+    }
+
+    /// An observer over the config file at `config`: the machine's, or a test's.
+    fn reading(config: Option<std::path::PathBuf>) -> Self {
         Observer {
             adapters: vec![
                 Box::new(claude::ClaudeAdapter::new()),
@@ -63,6 +73,7 @@ impl Observer {
             ],
             procs: SystemProcessTable::new(),
             previous: std::collections::HashMap::new(),
+            config,
         }
     }
 
@@ -70,10 +81,10 @@ impl Observer {
         // Every question this tick asks is answered from one snapshot of the
         // machine, and this is where that snapshot starts.
         procs.begin_poll();
-        let Some(cfg_path) = config::config_path() else {
+        let Some(cfg_path) = self.config.as_deref() else {
             return Poll::failed("cannot locate a home directory".into());
         };
-        let cfg = match config::load(&cfg_path) {
+        let cfg = match config::load(cfg_path) {
             Ok(c) => c,
             Err(e) => return Poll::failed(e.to_string()),
         };
@@ -220,6 +231,34 @@ mod tests {
         }
     }
 
+    /// A config path that holds no file, so a poll runs on defaults — never the
+    /// file on the developer's machine, whose contents no test may depend on.
+    fn no_config() -> Option<std::path::PathBuf> {
+        Some(std::env::temp_dir().join("agentpet-no-such-config").join("config.json"))
+    }
+
+    #[test]
+    fn a_poll_reads_the_config_it_was_given_not_the_machines() {
+        // Before the path was injected, every poll test read
+        // `~/.config/agent-pet/config.json` on whatever machine ran it, and a
+        // malformed one there failed three tests about other things entirely.
+        let dir = std::env::temp_dir().join("agentpet-poll-config");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let p = Observer::reading(Some(path.clone())).poll(&FakeProcessTable::default());
+        assert!(!p.ok);
+        assert!(
+            p.error.as_deref().unwrap_or("").contains(&path.display().to_string()),
+            "the failure does not name the file it read: {:?}",
+            p.error
+        );
+
+        let p = Observer::reading(None).poll(&FakeProcessTable::default());
+        assert!(!p.ok, "no home directory must be a failed tick, not a silent default");
+    }
+
     #[test]
     fn an_unchanged_status_keeps_counting_up_instead_of_restarting() {
         let mut obs = Observer::new();
@@ -286,7 +325,7 @@ mod tests {
     fn a_successful_poll_with_nothing_running_is_ok_and_empty() {
         // Distinct from a failure: the pet shows "no agents running", not an error.
         let procs = FakeProcessTable::default();
-        let p = Observer::new().poll(&procs);
+        let p = Observer::reading(no_config()).poll(&procs);
         assert!(p.ok);
         assert!(p.error.is_none());
     }
@@ -322,7 +361,7 @@ mod tests {
             )]),
         };
 
-        let p = Observer::new().poll(&procs);
+        let p = Observer::reading(no_config()).poll(&procs);
         assert!(p.ok, "a Codex failure failed the whole poll");
         assert!(p.error.is_none());
         assert!(
@@ -368,7 +407,7 @@ mod tests {
             ..Default::default()
         };
 
-        let p = Observer::new().poll(&procs);
+        let p = Observer::reading(no_config()).poll(&procs);
         assert!(p.ok);
         assert!(
             p.sessions.iter().any(|s| s.agent_id == "codex"),
@@ -383,7 +422,7 @@ mod tests {
         // tick; a poll that failed to say it had begun would let the next tick
         // answer from the last one, and an exited session would keep its row.
         let procs = FakeProcessTable::default();
-        let mut obs = Observer::new();
+        let mut obs = Observer::reading(no_config());
         obs.poll(&procs);
         obs.poll(&procs);
         assert_eq!(procs.polls.get(), 2);
@@ -392,7 +431,7 @@ mod tests {
     #[test]
     fn the_payload_shape_is_what_the_frontend_decodes() {
         let procs = FakeProcessTable::default();
-        let p = Observer::new().poll(&procs);
+        let p = Observer::reading(no_config()).poll(&procs);
         let json = serde_json::to_string(&p).unwrap();
         let back: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(back.get("ok").unwrap().is_boolean());
