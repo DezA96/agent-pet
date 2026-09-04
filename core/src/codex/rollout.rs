@@ -1,24 +1,10 @@
 use crate::codex::activity::activity_of;
 use crate::session::State;
+use crate::tail;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-
-/// How far back from the end of an unseen rollout to read in full.
-///
-/// Story 001 read a Claude transcript from offset 0, safe at its ~102 KB and
-/// since given this same window. A Codex rollout on this disk is 74 MB and a
-/// single-turn session reached 1.3 MB, so reading one whole would stall a poll
-/// for seconds at pet startup. Starting at
-/// bare EOF was rejected as worse: a session already mid-turn would read `unknown`
-/// until its next event, breaking the release's within-a-few-seconds spot check.
-///
-/// This window covers the activity line and, for a settled session, its state:
-/// `task_complete` lands 214 to 4,799 bytes from EOF across every rollout on this
-/// disk, because it is written as the turn ends. A session still *working* is the
-/// other case entirely — see [`MAX_BACKSCAN`].
-const FIRST_READ_WINDOW: u64 = 256 * 1024;
 
 /// How far back to keep looking for a turn boundary when the window held none.
 ///
@@ -197,7 +183,7 @@ impl Tailer {
         let fresh = known.is_none_or(|p| p.offset > len);
         let mut start = match known {
             Some(p) if !fresh => p.offset,
-            _ => len.saturating_sub(FIRST_READ_WINDOW),
+            _ => tail::first_sight_start(len),
         };
         if fresh {
             self.seen.insert(path.to_path_buf(), Progress::default());
@@ -217,14 +203,10 @@ impl Tailer {
             return self.remembered(path);
         }
 
-        // Landing mid-file lands mid-line; that fragment is not parseable JSON and
-        // is dropped rather than guessed at.
+        // Landing mid-file lands mid-line.
         if fresh && start > 0 {
-            match buf.iter().position(|b| *b == b'\n') {
-                Some(i) => {
-                    start += i as u64 + 1;
-                    buf.drain(..=i);
-                }
+            match tail::drop_leading_fragment(&mut buf) {
+                Some(dropped) => start += dropped,
                 // A window holding no line break at all yields nothing this tick.
                 None => {
                     self.seen
@@ -386,6 +368,7 @@ fn apply(line: &str, progress: &mut Progress) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tail::FIRST_READ_WINDOW;
     use std::io::Write;
 
     fn dir() -> PathBuf {
