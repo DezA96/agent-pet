@@ -23,6 +23,8 @@ are up to without switching to the terminal.
   unknown; it is never reported as `idle` or working by inference.
 - Given a status is displayed, then the row shows a count-up timer of seconds since that status was
   observed, so its age is always visible without a tuned staleness threshold.
+  (Superseded by story 006: the age now counts from the agent's own record of when the status
+  changed, and from first observation only where the agent recorded none.)
 - Given a session stops running, when the pet next refreshes, then its row disappears within a few
   seconds; sessions that are not running are never shown.
 - Given a session was force-killed and its registry file remains, when discovery runs, then no row is
@@ -52,12 +54,14 @@ are up to without switching to the terminal.
 
 ## Excluded From This Change
 - Codex CLI integration (C-003) — separate story, same release. Its directory is watched, its sessions
-  are not yet rendered.
+  are not yet rendered. (Delivered by story 003.)
 - Visually distinct attention states (C-005) — `idle`, working and unknown are distinguished by text
   only; no animation or colour semantics yet.
-- Distinguishing "blocked awaiting permission" from plain `idle`.
+- Distinguishing "blocked awaiting permission" from plain `idle`. (Delivered by story 004, which found
+  Claude Code publishes `status: waiting`.)
 - The add-directory folder picker — follow-up story in this release (C-014); this story ships defaults
-  plus a hand-editable config file.
+  plus a hand-editable config file. (C-014 was later dropped: learning each live process's profile
+  directory answered it. See the release scope's Explicit Scope Changes.)
 - Sessions launched by the VS Code extension. Its process publishes no status and no transcript
   (see Edge Cases); release 001 targets the CLI, as its plan states.
 - Any control of the agent from the pet (charter non-goal — read-only).
@@ -140,6 +144,7 @@ Verified so far:
   breaks when windows are hidden); process-tree inspection (misses in-process tools, no idle signal).
 - Settled by the design doc: portable Rust observation core behind a one-function JSON FFI, with a
   Swift + AppKit `NSPanel` frontend on macOS; adapters own liveness so the pet needs no change when an
-  agent is added; profile directories are re-derived every tick from defaults, config, and the
-  `CLAUDE_CONFIG_DIR` of every live `claude` process; config at `~/.config/agent-pet/config.json`;
+  agent is added; profile directories are re-derived every tick from each adapter's own default and
+  the profile variable of its live processes, plus the config file (originally the pet held the
+  defaults and read `CLAUDE_CONFIG_DIR` itself; amended at preflight run 1); config at `~/.config/agent-pet/config.json`;
   polling (not filesystem watching) because a force-killed process changes no file on disk.
