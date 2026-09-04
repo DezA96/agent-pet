@@ -170,6 +170,31 @@ fn shared() -> &'static Mutex<Observer> {
     OBSERVER.get_or_init(|| Mutex::new(Observer::new()))
 }
 
+/// One tick as the frontend sees it: whatever happens inside, a `Poll` comes back.
+///
+/// A panic inside a poll must never reach the boundary. Rust aborts a process
+/// that unwinds out of an `extern "C"` function, so one unreadable file would
+/// take the whole pet down with it; caught here, it is a failed tick, and the
+/// next tick starts over. The lock is recovered from the poisoning that catch
+/// leaves behind, for the same reason the process table's own locks are: a poll
+/// that panicked once must not read "unavailable" for the rest of the pet's
+/// life. The panic itself still reaches stderr through the default hook, which
+/// is where whoever has to fix it will look.
+fn tick(observer: &Mutex<Observer>) -> Poll {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut obs = observer.lock().unwrap_or_else(|p| p.into_inner());
+        // Borrowed out first so the cached process table can be passed to a
+        // method on the same value. A poll that panics part-way leaves a fresh
+        // table behind; its caches are relearned next tick, which is all they
+        // ever were.
+        let procs = std::mem::take(&mut obs.procs);
+        let result = obs.poll(&procs);
+        obs.procs = procs;
+        result
+    }))
+    .unwrap_or_else(|_| Poll::failed("the observer panicked; see stderr".into()))
+}
+
 /// Poll once and return the result as a JSON string.
 ///
 /// The single function the frontend calls. Keeping the boundary to one JSON
@@ -180,17 +205,7 @@ fn shared() -> &'static Mutex<Observer> {
 /// The returned pointer must be released with [`agentpet_free`].
 #[no_mangle]
 pub extern "C" fn agentpet_poll() -> *mut c_char {
-    let result = match shared().lock() {
-        Ok(mut obs) => {
-            // Borrowed out first so the cached process table can be passed to a
-            // method on the same value.
-            let procs = std::mem::take(&mut obs.procs);
-            let result = obs.poll(&procs);
-            obs.procs = procs;
-            result
-        }
-        Err(_) => Poll::failed("observer unavailable".into()),
-    };
+    let result = tick(shared());
     let json = serde_json::to_string(&result).unwrap_or_else(|e| {
         format!(r#"{{"ok":false,"sessions":[],"error":"cannot encode result: {e}"}}"#)
     });
@@ -219,6 +234,7 @@ mod tests {
     use procs::FakeProcessTable;
 
     use session::{AgentSession, State};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn sample(key: &str, state: State, activity: Option<&str>, at: u64) -> AgentSession {
         AgentSession {
@@ -321,6 +337,37 @@ mod tests {
         let mut back = vec![sample("s1", State::Idle, None, 9_000)];
         obs.pin_unchanged_states(&mut back);
         assert_eq!(back[0].status_since, 9_000);
+    }
+
+    #[test]
+    fn a_panicking_poll_is_a_failed_tick_and_the_next_tick_recovers() {
+        // Uncaught, this unwinds out of the FFI function and aborts the app.
+        // Caught without recovering the lock, every later tick reads
+        // "unavailable". Either way one bad tick would cost the pet its life.
+        struct PanicsOnce(AtomicBool);
+        impl Adapter for PanicsOnce {
+            fn profile_dirs(&self, _: &dyn ProcessTable) -> Vec<std::path::PathBuf> {
+                if !self.0.swap(true, Ordering::SeqCst) {
+                    panic!("one unreadable file");
+                }
+                vec![std::env::temp_dir()]
+            }
+            fn live_sessions(
+                &mut self,
+                _: &[std::path::PathBuf],
+                _: &dyn ProcessTable,
+            ) -> Vec<AgentSession> {
+                Vec::new()
+            }
+        }
+        let mut obs = Observer::reading(no_config());
+        obs.adapters = vec![Box::new(PanicsOnce(AtomicBool::new(false)))];
+        let observer = Mutex::new(obs);
+
+        let first = tick(&observer);
+        assert!(!first.ok, "a panic inside a poll did not become a failed tick");
+        let second = tick(&observer);
+        assert!(second.ok, "the tick after a panic still failed: {:?}", second.error);
     }
 
     #[test]
