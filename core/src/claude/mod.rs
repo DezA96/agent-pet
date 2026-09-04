@@ -22,6 +22,22 @@ use std::path::{Path, PathBuf};
 /// Release 001 targets the CLI, which is why this list has one entry.
 const OBSERVABLE_ENTRYPOINTS: &[&str] = &["cli"];
 
+/// The command a Claude Code session runs under, and the id its rows carry.
+///
+/// One word for both because they are the same word, and writing it twice is how
+/// a rename leaves `agentId` on the wire saying something the pet no longer means.
+/// Named here because it is this agent's fact, not the pet's — `ProcessTable` is
+/// asked by name and knows none.
+const COMMAND: &str = "claude";
+
+/// Where a session records the profile directory it is using, and what it uses
+/// when it records nothing: `~/.claude`.
+///
+/// Named here rather than anywhere in the pet. A pet holding this would need a
+/// new entry per agent, which is the change adding an agent is not supposed to
+/// need — the same reason liveness lives in the adapters.
+const PROFILE_VAR: &str = "CLAUDE_CONFIG_DIR";
+
 pub struct ClaudeAdapter {
     tailer: transcript::Tailer,
     /// Resolved transcript path per session, so the project directories are
@@ -75,6 +91,22 @@ impl Default for ClaudeAdapter {
 }
 
 impl Adapter for ClaudeAdapter {
+    fn profile_dirs(&self, procs: &dyn ProcessTable) -> Vec<PathBuf> {
+        let Some(home) = std::env::var_os("HOME") else {
+            return Vec::new();
+        };
+        let default = PathBuf::from(home).join(".claude");
+        // The default first, so it is watched whether or not a process is running
+        // to report it, then whatever the running ones say instead.
+        let mut dirs = vec![default.clone()];
+        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
+    }
+
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
         let mut candidates: Vec<(PathBuf, registry::RegistryEntry)> = Vec::new();
         for profile in profiles {
@@ -188,7 +220,7 @@ impl Adapter for ClaudeAdapter {
             };
 
             out.push(AgentSession {
-                agent_id: "claude".into(),
+                agent_id: COMMAND.into(),
                 session_key: entry.session_id.clone(),
                 project_path: entry.cwd.clone(),
                 display_name: project_name(&entry.cwd),
@@ -227,6 +259,30 @@ fn slug(cwd: &str) -> String {
 mod tests {
     use super::*;
     use crate::procs::FakeProcessTable;
+
+    #[test]
+    fn a_running_session_reports_the_profile_it_is_using() {
+        let mine = PathBuf::from("/tmp/agentpet-claude-home");
+        let theirs = PathBuf::from("/tmp/agentpet-codex-home");
+        let procs = FakeProcessTable {
+            named: std::collections::HashMap::from([(COMMAND.to_string(), vec![900])]),
+            dirs: std::collections::HashMap::from([
+                ((COMMAND.to_string(), PROFILE_VAR.to_string()), vec![mine.clone()]),
+                (("codex".to_string(), "CODEX_HOME".to_string()), vec![theirs.clone()]),
+            ]),
+            ..Default::default()
+        };
+        let out = ClaudeAdapter::new().profile_dirs(&procs);
+        assert!(out.contains(&mine), "the learned profile is missing: {out:?}");
+        assert!(!out.contains(&theirs), "another agent's profile was claimed: {out:?}");
+    }
+
+    #[test]
+    fn the_default_profile_is_watched_whether_or_not_anything_is_running() {
+        let home = PathBuf::from(std::env::var("HOME").unwrap());
+        let out = ClaudeAdapter::new().profile_dirs(&FakeProcessTable::default());
+        assert_eq!(out, vec![home.join(".claude")]);
+    }
 
     fn profile(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join("agentpet-claude-tests").join(name);

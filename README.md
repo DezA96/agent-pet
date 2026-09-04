@@ -103,8 +103,11 @@ and Quit Agent Pet.
 ## Configuration
 
 Optional. With no config file the pet watches `~/.claude` and `~/.codex`, and also finds
-the profile directory of every running `claude` process — so a session started under a
-custom `CLAUDE_CONFIG_DIR` shows up on its own, with no setup.
+the profile each running session reports for itself — a Claude session under a custom
+`CLAUDE_CONFIG_DIR`, a Codex session under a custom `CODEX_HOME` — so either shows up on
+its own, with no setup. Each adapter names its own command, variable and default; the pet
+asks every adapter and watches whatever comes back, so it holds no list of agent
+directories and learns no agent's name to do it.
 
 To watch somewhere else as well, create `~/.config/agent-pet/config.json`:
 

@@ -67,6 +67,9 @@ impl Observer {
     }
 
     pub fn poll(&mut self, procs: &dyn ProcessTable) -> Poll {
+        // Every question this tick asks is answered from one snapshot of the
+        // machine, and this is where that snapshot starts.
+        procs.begin_poll();
         let Some(cfg_path) = config::config_path() else {
             return Poll::failed("cannot locate a home directory".into());
         };
@@ -75,7 +78,14 @@ impl Observer {
             Err(e) => return Poll::failed(e.to_string()),
         };
 
-        let dirs = profiles::candidate_directories(&cfg, procs);
+        // Each adapter first, then the union: the pet asks who wants what
+        // watched and never names an agent to find out.
+        let learned: Vec<std::path::PathBuf> = self
+            .adapters
+            .iter()
+            .flat_map(|a| a.profile_dirs(procs))
+            .collect();
+        let dirs = profiles::candidate_directories(&cfg, &learned);
         if dirs.is_empty() {
             return Poll::failed("no directories to watch".into());
         }
@@ -297,8 +307,15 @@ mod tests {
 
         let procs = FakeProcessTable {
             starts: std::collections::HashMap::from([(900, "Mon Aug 24 04:00:00 2026".to_string())]),
-            dirs: vec![profile],
-            named: std::collections::HashMap::from([("codex".to_string(), vec![901])]),
+            polls: Default::default(),
+            dirs: std::collections::HashMap::from([(
+                ("claude".to_string(), "CLAUDE_CONFIG_DIR".to_string()),
+                vec![profile],
+            )]),
+            named: std::collections::HashMap::from([
+                ("claude".to_string(), vec![900]),
+                ("codex".to_string(), vec![901]),
+            ]),
             open: std::collections::HashMap::from([(
                 901,
                 vec![std::path::PathBuf::from("/nonexistent/rollout-gone.jsonl")],
@@ -314,6 +331,62 @@ mod tests {
             p.sessions
         );
         assert!(p.sessions.iter().all(|s| s.agent_id != "codex"));
+    }
+
+    #[test]
+    fn a_codex_session_under_a_profile_the_pet_was_never_told_about_draws_a_row() {
+        // The gap preflight run 1 found: `CODEX_HOME` set away from `~/.codex`,
+        // nothing in the config file, so the rollout lies outside every watched
+        // directory and `under_any` drops it. The row exists only because the
+        // Codex adapter asks the process table for its own profile directories,
+        // the way the Claude adapter does.
+        let root = std::env::temp_dir().join("agentpet-codex-home");
+        let _ = std::fs::remove_dir_all(&root);
+        let day = root.join("sessions").join("2026").join("08").join("24");
+        std::fs::create_dir_all(&day).unwrap();
+        let rollout = day.join("rollout-2026-08-24T20-41-00-cli-user.jsonl");
+        std::fs::copy(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures")
+                .join("codex")
+                .join("cli-user.jsonl"),
+            &rollout,
+        )
+        .unwrap();
+
+        // `lsof` reports the resolved path, and the candidate list is resolved
+        // too, so the test hands over the same spelling the machine would.
+        let rollout = std::fs::canonicalize(&rollout).unwrap();
+
+        let procs = FakeProcessTable {
+            dirs: std::collections::HashMap::from([(
+                ("codex".to_string(), "CODEX_HOME".to_string()),
+                vec![root],
+            )]),
+            named: std::collections::HashMap::from([("codex".to_string(), vec![7710])]),
+            open: std::collections::HashMap::from([(7710, vec![rollout])]),
+            ..Default::default()
+        };
+
+        let p = Observer::new().poll(&procs);
+        assert!(p.ok);
+        assert!(
+            p.sessions.iter().any(|s| s.agent_id == "codex"),
+            "a live Codex session under a learned profile drew no row: {:?}",
+            p.sessions
+        );
+    }
+
+    #[test]
+    fn every_poll_tells_the_process_table_to_take_a_fresh_snapshot() {
+        // The table serves one process listing to everything that asks inside a
+        // tick; a poll that failed to say it had begun would let the next tick
+        // answer from the last one, and an exited session would keep its row.
+        let procs = FakeProcessTable::default();
+        let mut obs = Observer::new();
+        obs.poll(&procs);
+        obs.poll(&procs);
+        assert_eq!(procs.polls.get(), 2);
     }
 
     #[test]

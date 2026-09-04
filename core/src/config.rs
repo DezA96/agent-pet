@@ -52,18 +52,6 @@ pub fn load(path: &Path) -> Result<Config, ConfigError> {
     })
 }
 
-/// Watched by default when the pet starts with no configuration.
-///
-/// Codex is watched from the start even though this release cannot yet interpret
-/// its sessions; they are ignored silently rather than surfaced as an error.
-pub fn default_directories() -> Vec<PathBuf> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Vec::new();
-    };
-    let home = PathBuf::from(home);
-    vec![home.join(".claude"), home.join(".codex")]
-}
-
 /// Expand a leading `~` so the config file stays comfortable to hand-edit.
 pub fn expand_tilde(raw: &str) -> PathBuf {
     if let Some(rest) = raw.strip_prefix("~/") {
