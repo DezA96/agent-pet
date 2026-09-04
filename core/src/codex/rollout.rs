@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 
 /// How far back from the end of an unseen rollout to read in full.
 ///
-/// Story 001 reads a Claude transcript from offset 0, which is safe at its ~102 KB.
-/// A Codex rollout on this disk is 74 MB and a single-turn session reached 1.3 MB,
-/// so reading one whole would stall a poll for seconds at pet startup. Starting at
+/// Story 001 read a Claude transcript from offset 0, safe at its ~102 KB and
+/// since given this same window. A Codex rollout on this disk is 74 MB and a
+/// single-turn session reached 1.3 MB, so reading one whole would stall a poll
+/// for seconds at pet startup. Starting at
 /// bare EOF was rejected as worse: a session already mid-turn would read `unknown`
 /// until its next event, breaking the release's within-a-few-seconds spot check.
 ///

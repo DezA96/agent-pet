@@ -4,10 +4,23 @@ use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// How far back from the end of an unseen transcript to read.
+///
+/// The same window the Codex reader uses, for the same reason: reading a whole
+/// file on first sight runs on the thread drawing the surface, and at startup
+/// that is every live session at once. Everything the pet derives from a
+/// transcript is at its tail — the activity line is the newest tool call, the
+/// error verdict the newest substantive entry — so the tail is enough. The cost
+/// accepted is an error older than this much bookkeeping going unseen on first
+/// sight; the next entry the session writes is read as it lands. Preflight run 1,
+/// finding 5: the Claude side read the whole file on a size nothing enforced.
+const FIRST_READ_WINDOW: u64 = 256 * 1024;
+
 /// Reads transcripts forward from where it last stopped.
 ///
 /// Transcripts are never re-read whole: this project's own is already 102 KB and
-/// growing, and the largest Codex rollout on disk is 74 MB. Each tick seeks to the
+/// growing, and the largest Codex rollout on disk is 74 MB. First sight reads at
+/// most [`FIRST_READ_WINDOW`] from the end; every tick after seeks to the
 /// remembered offset and reads only what is new.
 #[derive(Default)]
 pub struct Tailer {
@@ -83,11 +96,17 @@ impl Tailer {
             return;
         };
         let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-        let mut offset = self.offsets.get(path).copied().unwrap_or(0);
+        let known = self.offsets.get(path).copied();
 
-        // A truncated or replaced file means our offset is meaningless.
-        if offset > len {
-            offset = 0;
+        // No offset yet, or one past the end because the file was replaced or
+        // truncated: either way the remembered position means nothing, and so
+        // does anything derived from it.
+        let fresh = known.is_none_or(|o| o > len);
+        let mut offset = match known {
+            Some(o) if !fresh => o,
+            _ => len.saturating_sub(FIRST_READ_WINDOW),
+        };
+        if fresh {
             self.last_activity.remove(path);
             self.last_error.remove(path);
         }
@@ -101,6 +120,24 @@ impl Tailer {
         let mut buf = Vec::new();
         if file.read_to_end(&mut buf).is_err() {
             return;
+        }
+
+        // Landing mid-file lands mid-line; that fragment is not parseable JSON and
+        // is dropped rather than guessed at.
+        if fresh && offset > 0 {
+            match buf.iter().position(|b| *b == b'\n') {
+                Some(i) => {
+                    offset += i as u64 + 1;
+                    buf.drain(..=i);
+                }
+                // A window holding no line break at all is one line longer than
+                // the window, still being written. Nothing this tick; the next
+                // reads from the end, as the Codex reader does.
+                None => {
+                    self.offsets.insert(path.to_path_buf(), len);
+                    return;
+                }
+            }
         }
         let text = String::from_utf8_lossy(&buf);
 
@@ -369,6 +406,35 @@ mod tests {
             assert_eq!(e.at, None);
             assert_eq!(e.line(), "Errored");
         }
+    }
+
+    #[test]
+    fn a_large_transcript_is_read_from_its_tail_on_first_sight() {
+        // Preflight run 1, finding 5: an unseen transcript was read whole,
+        // however large, on the thread drawing the surface. What the pet needs is
+        // at the tail. The cost accepted, and pinned here so it is a decision
+        // rather than a surprise: an error buried further back than the window
+        // is not seen on first sight — a whole read would have reported it.
+        let error = r#"{"type":"assistant","isApiErrorMessage":true,"apiErrorStatus":529,"message":{"role":"assistant","content":[]}}"#.to_string();
+        let bookkeeping = json!({"type": "file-history-snapshot", "snapshot": {"pad": "x".repeat(1000)}}).to_string();
+        let mut lines = vec![error];
+        while lines.len() * (bookkeeping.len() + 1) < 2 * FIRST_READ_WINDOW as usize {
+            lines.push(bookkeeping.clone());
+        }
+        lines.push(tool_line("Edit", json!({"file_path": "/new/last.md"})));
+        let p = write_transcript("large.jsonl", &lines);
+
+        let mut t = Tailer::new();
+        assert_eq!(t.activity(&p).as_deref(), Some("Editing last.md"));
+        assert_eq!(t.error(&p), None, "first sight read past the window");
+
+        // From here on it tails forward like any other transcript.
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        writeln!(f, "{}", tool_line("Read", json!({"file_path": "/new/next.md"}))).unwrap();
+        assert_eq!(t.activity(&p).as_deref(), Some("Reading next.md"));
+        // Half a megabyte is worth cleaning up, unlike the module's other fixtures.
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
