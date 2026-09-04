@@ -44,8 +44,9 @@ impl Poll {
     }
 }
 
-/// Holds what must survive between ticks: transcript read offsets and resolved
-/// transcript paths. Everything else is rebuilt each tick.
+/// Holds what must survive between ticks — the adapters and their transcript
+/// read offsets, the process table's caches, the state each row last showed —
+/// and where the config file is. Everything else is rebuilt each tick.
 pub struct Observer {
     adapters: Vec<Box<dyn Adapter + Send>>,
     procs: SystemProcessTable,
@@ -72,8 +73,8 @@ impl Observer {
                 Box::new(codex::CodexAdapter::new()),
             ],
             procs: SystemProcessTable::new(),
-            previous: std::collections::HashMap::new(),
             config,
+            previous: std::collections::HashMap::new(),
         }
     }
 
@@ -248,6 +249,7 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
 
         let p = Observer::reading(Some(path.clone())).poll(&FakeProcessTable::default());
+        std::fs::remove_file(&path).ok();
         assert!(!p.ok);
         assert!(
             p.error.as_deref().unwrap_or("").contains(&path.display().to_string()),
