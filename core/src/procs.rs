@@ -57,14 +57,86 @@ pub trait ProcessTable {
     fn open_paths(&self, pids: &[u32]) -> HashMap<u32, Vec<PathBuf>>;
 }
 
-/// Talks to `ps`.
+/// The commands the table runs, one method per command.
+///
+/// This is the table's seam with the machine. Production runs `ps` and `lsof`;
+/// a test supplies what they would have printed, so what the table itself
+/// promises — one listing per poll, dropped when the next poll begins, and each
+/// process's environment read once for as long as it runs — is provable with no
+/// agent running anywhere. One method per command, each returning that command's
+/// text, so a fake hands back text and carries no logic of its own.
+///
+/// `None` is a command that could not be run at all. Whatever a command did
+/// print, however empty, is `Some`.
+trait CommandRunner {
+    /// `ps -Ao pid=,comm=`: every running process, `<pid> <comm>` per line.
+    fn process_listing(&self) -> Option<String>;
+    /// `ps eww -o command= -p <pid>`: one process's argv, then its environment.
+    fn command_and_environment(&self, pid: u32) -> Option<String>;
+    /// `ps -o pid=,lstart= -p <pids>` under `TZ=UTC`: `<pid> <start>` per PID
+    /// that is running; the rest are simply absent.
+    fn start_times_utc(&self, pids: &[u32]) -> Option<String>;
+    /// `lsof -w -Fpn -p <pids>`: one field per line, `p<pid>` then its `n<path>`s.
+    fn open_files(&self, pids: &[u32]) -> Option<String>;
+}
+
+/// The real `ps` and `lsof`.
+struct SystemCommands;
+
+impl SystemCommands {
+    fn text(mut cmd: Command) -> Option<String> {
+        let out = cmd.output().ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// One call for every PID at once, rather than one per session.
+    fn pid_list(pids: &[u32]) -> String {
+        pids.iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+impl CommandRunner for SystemCommands {
+    fn process_listing(&self) -> Option<String> {
+        let mut cmd = Command::new("ps");
+        cmd.args(["-Ao", "pid=,comm="]);
+        Self::text(cmd)
+    }
+
+    fn command_and_environment(&self, pid: u32) -> Option<String> {
+        // `ps e` prints the environment only when a PID is named explicitly.
+        let mut cmd = Command::new("ps");
+        cmd.args(["eww", "-o", "command=", "-p", &pid.to_string()]);
+        Self::text(cmd)
+    }
+
+    fn start_times_utc(&self, pids: &[u32]) -> Option<String> {
+        let mut cmd = Command::new("ps");
+        cmd.env("TZ", "UTC")
+            .args(["-o", "pid=,lstart=", "-p", &Self::pid_list(pids)]);
+        Self::text(cmd)
+    }
+
+    fn open_files(&self, pids: &[u32]) -> Option<String> {
+        // `-F` emits a field-per-line stream: `p<pid>` opens a process's record,
+        // `n<path>` names one open file. `-w` suppresses the warnings an
+        // unreadable mount would otherwise print.
+        let mut cmd = Command::new("lsof");
+        cmd.args(["-w", "-Fpn", "-p", &Self::pid_list(pids)]);
+        Self::text(cmd)
+    }
+}
+
+/// Talks to `ps`, through a [`CommandRunner`].
 ///
 /// Caches each process's profile directory by PID. A running process cannot
 /// change its own environment, so re-reading it every tick spends battery to
 /// learn something that cannot have changed; newly appeared PIDs are still read
 /// immediately, which is what keeps a session launched moments ago visible.
-#[derive(Default)]
 pub struct SystemProcessTable {
+    runner: Box<dyn CommandRunner + Send>,
     /// Keyed by command as well as PID: two adapters ask about two different
     /// commands, and one asking must not evict what the other learned.
     dir_cache: Mutex<HashMap<(String, u32), Option<PathBuf>>>,
@@ -80,9 +152,24 @@ pub struct SystemProcessTable {
     listing: Mutex<Option<String>>,
 }
 
+impl Default for SystemProcessTable {
+    fn default() -> Self {
+        Self::over(SystemCommands)
+    }
+}
+
 impl SystemProcessTable {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A table over whatever runs the commands: the machine, or a test's stand-in.
+    fn over(runner: impl CommandRunner + Send + 'static) -> Self {
+        Self {
+            runner: Box::new(runner),
+            dir_cache: Mutex::new(HashMap::new()),
+            listing: Mutex::new(None),
+        }
     }
 
     /// Read one process's profile directory out of its own environment.
@@ -91,12 +178,7 @@ impl SystemProcessTable {
     /// process set nothing: both mean this process has no directory of its own to
     /// contribute, and the caller supplies the default either way.
     fn profile_dir_of(&self, pid: u32, var: &str) -> Option<PathBuf> {
-        // `ps e` prints the environment only when a PID is named explicitly.
-        let out = Command::new("ps")
-            .args(["eww", "-o", "command=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        dir_in_environment(&String::from_utf8_lossy(&out.stdout), var)
+        dir_in_environment(&self.runner.command_and_environment(pid)?, var)
     }
 
     /// One `ps -Ao pid=,comm=` shared by everything that asks inside a poll.
@@ -105,12 +187,11 @@ impl SystemProcessTable {
         if let Some(text) = held.as_ref() {
             return text.clone();
         }
-        let Ok(out) = Command::new("ps").args(["-Ao", "pid=,comm="]).output() else {
+        let Some(text) = self.runner.process_listing() else {
             // Leave the stale listing in place rather than caching a failure: the
             // next caller retries instead of inheriting an empty machine.
             return String::new();
         };
-        let text = String::from_utf8_lossy(&out.stdout).into_owned();
         *held = Some(text.clone());
         text
     }
@@ -126,18 +207,11 @@ impl ProcessTable for SystemProcessTable {
         if pids.is_empty() {
             return out;
         }
-        let list = pids
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        // One call for every PID at once; dead PIDs are omitted from the output.
-        let res = Command::new("ps")
-            .env("TZ", "UTC")
-            .args(["-o", "pid=,lstart=", "-p", &list])
-            .output();
-        let Ok(res) = res else { return out };
-        for line in String::from_utf8_lossy(&res.stdout).lines() {
+        // Dead PIDs are omitted from the output.
+        let Some(text) = self.runner.start_times_utc(pids) else {
+            return out;
+        };
+        for line in text.lines() {
             let line = line.trim();
             let Some((pid, start)) = line.split_once(char::is_whitespace) else {
                 continue;
@@ -158,22 +232,11 @@ impl ProcessTable for SystemProcessTable {
         if pids.is_empty() {
             return out;
         }
-        let list = pids
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-        // One call for every PID at once. `-F` emits a field-per-line stream:
-        // `p<pid>` opens a process's record, `n<path>` names one open file.
-        // `-w` suppresses the warnings an unreadable mount would otherwise print.
-        let Ok(res) = Command::new("lsof")
-            .args(["-w", "-Fpn", "-p", &list])
-            .output()
-        else {
+        let Some(text) = self.runner.open_files(pids) else {
             return out;
         };
         let mut current: Option<u32> = None;
-        for line in String::from_utf8_lossy(&res.stdout).lines() {
+        for line in text.lines() {
             let Some((tag, rest)) = line.split_at_checked(1) else {
                 continue;
             };
@@ -433,6 +496,198 @@ mod tests {
         let mut cache = HashMap::new();
         let out = cached_profile_dirs(&mut cache, "claude", &[7], |_| None);
         assert!(out.is_empty());
+    }
+
+    // MARK: - What the table promises about the machine it reads
+
+    /// The machine as a test describes it, shared between the test and the
+    /// runner handed to the table, so the test can change what is running
+    /// between asks and see whether the table noticed.
+    #[derive(Default)]
+    struct Machine {
+        /// What `ps -Ao pid=,comm=` prints, or `None` when `ps` cannot run.
+        listing: Option<String>,
+        /// What `ps eww -o command=` prints for each PID that answers.
+        environments: HashMap<u32, String>,
+        /// What `ps -o pid=,lstart=` prints for the PIDs asked, or `None` when
+        /// `ps` cannot run.
+        starts: Option<String>,
+        /// What `lsof -Fpn` prints for the PIDs asked, or `None` when `lsof`
+        /// cannot run.
+        open_files: Option<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct FakeCommands(std::sync::Arc<Mutex<Machine>>);
+
+    impl FakeCommands {
+        fn set(&self, change: impl FnOnce(&mut Machine)) {
+            change(&mut self.0.lock().unwrap());
+        }
+    }
+
+    impl CommandRunner for FakeCommands {
+        fn process_listing(&self) -> Option<String> {
+            self.0.lock().unwrap().listing.clone()
+        }
+        fn command_and_environment(&self, pid: u32) -> Option<String> {
+            self.0.lock().unwrap().environments.get(&pid).cloned()
+        }
+        fn start_times_utc(&self, _pids: &[u32]) -> Option<String> {
+            self.0.lock().unwrap().starts.clone()
+        }
+        fn open_files(&self, _pids: &[u32]) -> Option<String> {
+            self.0.lock().unwrap().open_files.clone()
+        }
+    }
+
+    #[test]
+    fn one_poll_answers_every_ask_from_one_listing() {
+        // Three asks land inside one tick — each adapter's, and the Codex
+        // adapter's again on the way to open files. A process that exits between
+        // them is still in this tick's snapshot: the listing is taken once, not
+        // once per ask.
+        let machine = FakeCommands::default();
+        machine.set(|m| m.listing = Some("  401 claude\n".into()));
+        let table = SystemProcessTable::over(machine.clone());
+        table.begin_poll();
+        assert_eq!(table.pids_of_command("claude"), vec![401]);
+        machine.set(|m| m.listing = Some(String::new()));
+        assert_eq!(
+            table.pids_of_command("claude"),
+            vec![401],
+            "the listing was taken again inside one poll"
+        );
+    }
+
+    #[test]
+    fn the_next_poll_sees_what_changed_since_the_last() {
+        // An exited session must lose its row at the next tick, and a listing
+        // that outlives its poll is exactly what would keep it on the surface.
+        let machine = FakeCommands::default();
+        machine.set(|m| m.listing = Some("  401 claude\n".into()));
+        let table = SystemProcessTable::over(machine.clone());
+        table.begin_poll();
+        assert_eq!(table.pids_of_command("claude"), vec![401]);
+
+        machine.set(|m| m.listing = Some("  402 codex\n".into()));
+        table.begin_poll();
+        assert_eq!(
+            table.pids_of_command("claude"),
+            Vec::<u32>::new(),
+            "an exited process survived into the next poll"
+        );
+        assert_eq!(table.pids_of_command("codex"), vec![402], "a process that appeared was missed");
+    }
+
+    #[test]
+    fn a_listing_that_could_not_be_taken_is_retried_by_the_next_ask() {
+        // `ps` failing once must not be remembered as an empty machine for the
+        // rest of the poll: nothing was learned, so the next ask asks again.
+        let machine = FakeCommands::default();
+        let table = SystemProcessTable::over(machine.clone());
+        table.begin_poll();
+        assert_eq!(table.pids_of_command("claude"), Vec::<u32>::new());
+        machine.set(|m| m.listing = Some("  401 claude\n".into()));
+        assert_eq!(
+            table.pids_of_command("claude"),
+            vec![401],
+            "a failed listing was remembered as an empty machine"
+        );
+    }
+
+    #[test]
+    fn a_process_environment_is_read_once_for_as_long_as_it_runs() {
+        // A running process cannot change its environment, so the second poll
+        // must not ask the machine again. Observable from outside because the
+        // machine stops answering and the directory is still known.
+        let machine = FakeCommands::default();
+        machine.set(|m| {
+            m.listing = Some("  7 claude\n".into());
+            m.environments.insert(7, "claude CLAUDE_CONFIG_DIR=/Users/x/.dev".into());
+        });
+        let table = SystemProcessTable::over(machine.clone());
+        table.begin_poll();
+        assert_eq!(
+            table.profile_dirs_of_command("claude", "CLAUDE_CONFIG_DIR"),
+            vec![PathBuf::from("/Users/x/.dev")]
+        );
+
+        machine.set(|m| m.environments.clear());
+        table.begin_poll();
+        assert_eq!(
+            table.profile_dirs_of_command("claude", "CLAUDE_CONFIG_DIR"),
+            vec![PathBuf::from("/Users/x/.dev")],
+            "the environment was read again on a later poll"
+        );
+    }
+
+    #[test]
+    fn a_process_that_appears_is_read_the_poll_it_appears() {
+        // Reading once must not mean reading only at startup: a session launched
+        // moments ago is what the per-tick re-listing exists to catch.
+        let machine = FakeCommands::default();
+        machine.set(|m| {
+            m.listing = Some("  7 claude\n".into());
+            m.environments.insert(7, "claude CLAUDE_CONFIG_DIR=/Users/x/one".into());
+        });
+        let table = SystemProcessTable::over(machine.clone());
+        table.begin_poll();
+        assert_eq!(
+            table.profile_dirs_of_command("claude", "CLAUDE_CONFIG_DIR"),
+            vec![PathBuf::from("/Users/x/one")]
+        );
+
+        machine.set(|m| {
+            m.listing = Some("  7 claude\n  8 claude\n".into());
+            m.environments.insert(8, "claude CLAUDE_CONFIG_DIR=/Users/x/two".into());
+        });
+        table.begin_poll();
+        assert_eq!(
+            table.profile_dirs_of_command("claude", "CLAUDE_CONFIG_DIR"),
+            vec![PathBuf::from("/Users/x/one"), PathBuf::from("/Users/x/two")]
+        );
+    }
+
+    #[test]
+    fn start_times_come_back_per_pid_and_a_dead_pid_is_absent() {
+        // Real `TZ=UTC ps -o pid=,lstart=` output for two of three PIDs asked:
+        // `ps` prints nothing for a PID that is not running.
+        let machine = FakeCommands::default();
+        machine.set(|m| {
+            m.starts = Some("  401 Mon Aug 24 04:00:00 2026\n  402 Tue Aug 25 05:06:07 2026\n".into())
+        });
+        let table = SystemProcessTable::over(machine);
+        let out = table.start_times_utc(&[401, 402, 403]);
+        assert_eq!(out.get(&401).map(String::as_str), Some("Mon Aug 24 04:00:00 2026"));
+        assert_eq!(out.get(&402).map(String::as_str), Some("Tue Aug 25 05:06:07 2026"));
+        assert!(!out.contains_key(&403), "a dead PID was given a start time");
+    }
+
+    #[test]
+    fn open_paths_are_grouped_by_process_and_only_real_paths_count() {
+        // Real `lsof -Fpn` shape: `p` opens a process, each `n` is one open file.
+        // Sockets and pipes carry `n` lines that are not paths and are dropped.
+        let machine = FakeCommands::default();
+        machine.set(|m| {
+            m.open_files = Some("p401\nn/Users/x/.codex/sessions/a.jsonl\nnlocalhost:443\np402\nn/tmp/b\n".into())
+        });
+        let table = SystemProcessTable::over(machine);
+        let out = table.open_paths(&[401, 402]);
+        assert_eq!(out[&401], vec![PathBuf::from("/Users/x/.codex/sessions/a.jsonl")]);
+        assert_eq!(out[&402], vec![PathBuf::from("/tmp/b")]);
+    }
+
+    #[test]
+    fn a_command_that_cannot_run_yields_nothing_rather_than_a_failure() {
+        // `ps` or `lsof` missing or refused is an empty answer, never a panic
+        // across the FFI: the poll reports ok with fewer rows.
+        let table = SystemProcessTable::over(FakeCommands::default());
+        table.begin_poll();
+        assert_eq!(table.pids_of_command("claude"), Vec::<u32>::new());
+        assert!(table.start_times_utc(&[1]).is_empty());
+        assert!(table.open_paths(&[1]).is_empty());
+        assert!(table.profile_dirs_of_command("claude", "CLAUDE_CONFIG_DIR").is_empty());
     }
 }
 
