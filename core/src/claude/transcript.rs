@@ -433,6 +433,8 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         writeln!(f, "{}", tool_line("Read", json!({"file_path": "/new/next.md"}))).unwrap();
         assert_eq!(t.activity(&p).as_deref(), Some("Reading next.md"));
+        // Half a megabyte is worth cleaning up, unlike the module's other fixtures.
+        std::fs::remove_file(&p).ok();
     }
 
     #[test]
