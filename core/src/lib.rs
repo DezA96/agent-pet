@@ -233,6 +233,7 @@ mod tests {
     use procs::FakeProcessTable;
 
     use session::{AgentSession, State};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn sample(key: &str, state: State, activity: Option<&str>, at: u64) -> AgentSession {
         AgentSession {
@@ -341,7 +342,6 @@ mod tests {
         // Uncaught, this unwinds out of the FFI function and aborts the app.
         // Caught without recovering the lock, every later tick reads
         // "unavailable". Either way one bad tick would cost the pet its life.
-        use std::sync::atomic::{AtomicBool, Ordering};
         struct PanicsOnce(AtomicBool);
         impl Adapter for PanicsOnce {
             fn profile_dirs(&self, _: &dyn ProcessTable) -> Vec<std::path::PathBuf> {
