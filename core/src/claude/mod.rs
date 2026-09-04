@@ -92,19 +92,7 @@ impl Default for ClaudeAdapter {
 
 impl Adapter for ClaudeAdapter {
     fn profile_dirs(&self, procs: &dyn ProcessTable) -> Vec<PathBuf> {
-        let Some(home) = std::env::var_os("HOME") else {
-            return Vec::new();
-        };
-        let default = PathBuf::from(home).join(".claude");
-        // The default first, so it is watched whether or not a process is running
-        // to report it, then whatever the running ones say instead.
-        let mut dirs = vec![default.clone()];
-        for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR) {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
-        }
-        dirs
+        profile_dirs_under(std::env::var_os("HOME").map(PathBuf::from), procs)
     }
 
     fn live_sessions(&mut self, profiles: &[PathBuf], procs: &dyn ProcessTable) -> Vec<AgentSession> {
@@ -255,6 +243,25 @@ fn slug(cwd: &str) -> String {
         .collect()
 }
 
+/// The directories this agent wants watched: its default under `home`, where
+/// there is one, then whatever its running processes reported.
+///
+/// The default first, so it is watched whether or not a process is running to
+/// report it. No home directory loses only the default: what a running process
+/// reported is that process's own fact and is watched regardless. This once
+/// returned early on a missing `HOME` and threw the reported directories away
+/// with the default. Takes the home directory as a value so the missing case is
+/// testable without touching the environment of a test run.
+fn profile_dirs_under(home: Option<PathBuf>, procs: &dyn ProcessTable) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = home.map(|h| h.join(".claude")).into_iter().collect();
+    for dir in procs.profile_dirs_of_command(COMMAND, PROFILE_VAR) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
+        }
+    }
+    dirs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +289,19 @@ mod tests {
         let home = PathBuf::from(std::env::var("HOME").unwrap());
         let out = ClaudeAdapter::new().profile_dirs(&FakeProcessTable::default());
         assert_eq!(out, vec![home.join(".claude")]);
+    }
+
+    #[test]
+    fn a_reported_profile_is_watched_even_with_no_home_directory() {
+        // No home directory means no default to add — and nothing more. What a
+        // running process reported is still watched; this returned nothing.
+        let mine = PathBuf::from("/tmp/agentpet-claude-nohome");
+        let procs = FakeProcessTable {
+            named: std::collections::HashMap::from([(COMMAND.to_string(), vec![900])]),
+            dirs: std::collections::HashMap::from([((COMMAND.to_string(), PROFILE_VAR.to_string()), vec![mine.clone()])]),
+            ..Default::default()
+        };
+        assert_eq!(profile_dirs_under(None, &procs), vec![mine]);
     }
 
     fn profile(name: &str) -> PathBuf {
