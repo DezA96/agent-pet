@@ -1,12 +1,19 @@
 # Technical Design: Observation channel and pet surface
 
 ## Status
-Implemented
+Settled
 
 ## Related Work
 - Charter: [docs/project-charter.md](../project-charter.md)
-- Release plan: [001 — Glanceable Agent Status](../releases/001-glanceable-agent-status.md)
-- Story: [001 — Live Claude Code session status](../stories/001-live-claude-session-status.md)
+- Release scope: [001 — Glanceable Agent Status](../releases/001-glanceable-agent-status.md)
+- Story that called for this design: [001 — Live Claude Code session status](../stories/001-live-claude-session-status.md)
+- Stories whose builds amended it: [002](../stories/002-placeable-controllable-pet-window.md)
+  (window placement and remembered position), [003](../stories/003-codex-cli-integration.md)
+  (second adapter, neutral `ProcessTable`), [004](../stories/004-attention-states.md) (waiting and
+  errored states), [005](../stories/005-the-pet-itself.md) (the creature),
+  [006](../stories/006-status-age-from-the-real-status-change.md) (age from the agent's own timestamp)
+- Preflight receipt whose findings amended it: [release 001, run 1](../preflight/preflight-001-run-1.md)
+  (findings 3 and 4: agent-neutral profile discovery)
 
 ## Design Scope
 Two questions the story spec left open — the pet's platform/runtime, and how profile directories are
@@ -15,6 +22,10 @@ enumerated and defaulted — plus the agent-adapter seam that must absorb Codex 
 The observation channel itself is settled by the spec and not re-opened here: per-profile registry file
 `<profile>/sessions/<pid>.json` for discovery, project, liveness and status; per-session transcript
 `<profile>/projects/<cwd-slug>/<sessionId>.jsonl` for the activity line. Both read-only.
+
+Codex's channel — the rollout file a live `codex` process holds open under `<CODEX_HOME>/sessions/`,
+liveness proven by the open handle rather than a PID — was settled by story 003's spec and is not
+re-opened here either.
 
 ## Requirements and Constraints
 - Never takes keyboard focus; never blocks interaction with the window beneath (story AC).
@@ -53,13 +64,15 @@ same live PID. A naive string compare marks every live session dead.
 ### Platform and runtime — SETTLED
 A portable observation core in Rust, and the strongest native frontend for each OS it ever runs on. On
 macOS that frontend is Swift + AppKit: a borderless `NSPanel` created with `.nonactivatingPanel`, at
-`.statusBar` level, with `ignoresMouseEvents = true` and
-`collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]`, shipped as an `.app` with
-`LSUIElement`. Two of the story's acceptance criteria — never takes keyboard focus, never blocks the
-window beneath — are those exact AppKit primitives rather than an emulation of them.
+`.statusBar` level, with `canBecomeKey` and `canBecomeMain` both false and
+`collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]`, shipped
+as an `.app` with `LSUIElement`. Never taking keyboard focus is that exact AppKit primitive rather than
+an emulation of it. `ignoresMouseEvents` is not fixed: the panel sets it as the pointer moves — true
+over the transparent band beside the creature, false over anything drawn — for the reasons under
+*Amended after real use* below.
 
-The core ships as a Rust static library linked into the Swift app. Exactly one function crosses the
-boundary: the core returns the current session list as a JSON string and Swift decodes it with `Codable`.
+The core ships as a Rust static library linked into the Swift app. One call crosses the boundary,
+plus the release of what it returned: the core returns the current session list as a JSON string and Swift decodes it with `Codable`.
 The seam is already one call (see Agent-adapter seam), so the FFI is about twenty lines on each side and
 does not grow. The same JSON payload works unchanged if the core is later run as a separate process, or
 paired with a Windows or GTK frontend.
@@ -78,8 +91,10 @@ window drawing a few rows of text, stays fully native per platform.
 ### Agent-adapter seam — SETTLED
 Each agent has its own adapter. The pet asks every adapter, once per discovery tick, for the list of its
 sessions that are running *right now*. Each returned session carries: which agent, which project, the
-name to display, its state (`working` | `idle` | `unknown`), one short activity line, and when that was
-observed. The pet renders that list and nothing else — it never learns what a process ID, a registry
+name to display, its state (`working` | `idle` | `waiting` | `errored` | `unknown` — the middle two added
+by story 004, and the only two that want something from the user), one short activity line, and when
+the displayed state began (`status_since`: the agent's own timestamp where it recorded one, otherwise
+when the pet first saw the reading — story 006). The pet renders that list and nothing else — it never learns what a process ID, a registry
 file, or a JSONL transcript is.
 
 **Liveness lives inside the adapter, not the pet.** Claude Code's test is the story's three-part rule
@@ -101,19 +116,30 @@ behaviour stay controlled in one place.
   per-agent icon and no per-agent branch. An agent wanting a richer token must supply it through the
   session payload rather than have the pet learn about it (C-018).
 
-### Profile directory enumeration — SETTLED (location of the config file still open)
+**Amended (preflight run 1, release 001).** The counter-example is gone. The seam asks two questions of
+each adapter per tick: `profile_dirs` — which directories its own running processes say to watch — and
+then `live_sessions`. `ProcessTable::profile_dirs_of_command(command, var)` is as neutral as the other
+primitives: the adapter names the command and the variable (`claude` / `CLAUDE_CONFIG_DIR`, `codex` /
+`CODEX_HOME`) and its own default (`~/.claude`, `~/.codex`), and the pet unions whatever comes back
+without knowing whose directories they are.
+
+### Profile directory enumeration — SETTLED
 There is no separate startup path. Every discovery tick rebuilds the candidate directory list from
 scratch:
 
-1. Defaults (`~/.claude`, `~/.codex`), union the entries in the pet's config file, union the
-   `CLAUDE_CONFIG_DIR` value read from the environment of every `claude` process currently running.
-2. For each directory, list the registry files and apply the adapter's liveness test.
+1. Ask every adapter for the directories it wants watched: its own default, plus the directory each of
+   its running processes records in its own variable — `CLAUDE_CONFIG_DIR` for a `claude` process,
+   `CODEX_HOME` for a `codex` one. Union those with the entries in the pet's config file. The pet names
+   no agent, no variable and no default in this step; each adapter supplies its own. (Amended at
+   preflight run 1: originally the pet held both defaults and read `CLAUDE_CONFIG_DIR` itself, so a
+   Codex session under a custom `CODEX_HOME` drew no row.)
+2. Hand the whole list to every adapter, which reads what it understands and ignores the rest.
 
 Startup is simply the first tick. A session launched while the pet is already running appears within one
 tick (~2 s), because step 1 re-reads live processes every tick rather than once at boot — including a
 session started under a profile directory the pet has never seen before.
 
-Reading `CLAUDE_CONFIG_DIR` off a live process is not the rejected "process-tree inspection": that was
+Reading a profile variable off a live process is not the rejected "process-tree inspection": that was
 rejected as a *status* channel. Here the process only reveals a directory; the registry file remains the
 sole source of state. Verified: `ps eww -p <pid>` exposes `CLAUDE_CONFIG_DIR=/Users/.../.dev` for a live
 session, and this machine's profiles are split precisely because `~/.zshrc` aliases
@@ -123,6 +149,11 @@ session, and this machine's profiles are split precisely because `~/.zshrc` alia
 mean the pet editing a file the user hand-maintains, and dead profile directories would accumulate with
 nothing ever removing them. Re-learning costs nothing — the process check runs every tick for liveness
 anyway. Persisting them is backlogged as C-015 for a later release.
+
+What the re-learning costs is bounded in two ways, both tested against a command runner a test
+supplies: one `ps` listing serves every question asked inside a tick and is dropped when the next tick
+begins, and a process's environment is read once for as long as it runs, since a running process cannot
+change it.
 
 ### Activity line — SETTLED
 Sourced from the newest `tool_use` entry in the session's transcript.
@@ -136,10 +167,15 @@ The fallback is not an edge case. Across 733 tool calls in 25 transcripts from b
 `Edit` (145), `Write` (52) and `Read` (42) never do, and their `file_path` is the most useful token
 available for the row.
 
-**The activity line renders only when the registry file reports `status: busy`.** The transcript's last
-`tool_use` goes stale the instant a session stops working, so an idle session showing the last thing it
-did would read as busy at a glance — the precise failure the pet exists to prevent. The registry
-`status` is the authority; the transcript only supplies wording.
+**The transcript's line renders only while the session is working** — registry `status: busy`, or
+`shell` since story 004. The transcript's last `tool_use` goes stale the instant a session stops
+working, so an idle session showing the last thing it did would read as busy at a glance — the precise
+failure the pet exists to prevent. The registry `status` is the authority; the transcript only supplies
+wording.
+
+Since story 004 the line has two other sources, one per attention state: a waiting session shows the
+agent's own `waitingFor` reason, and an errored one shows `Error: <code>` from the transcript entry it
+stopped on. Idle and unknown rows carry no line.
 
 ### Non-working surfaces — SETTLED
 Three situations, three phrases distinct enough that none can be mistaken for another at a glance:
@@ -147,8 +183,8 @@ Three situations, three phrases distinct enough that none can be mistaken for an
 | Situation | Shown |
 |---|---|
 | A session's working state cannot be read | `state unknown` on that row |
-| Discovery itself failed | `sessions unreadable`, replacing the list |
-| Discovery succeeded, nothing is running | `no agents running`, replacing the list |
+| Discovery itself failed | `Sessions unreadable`, replacing the list |
+| Discovery succeeded, nothing is running | `No agents running`, replacing the list |
 
 `state unknown` is never resolved to `idle` or working by inference. The count-up timer keeps running on
 an unknown row, so a state unknown for two seconds and one unknown for four minutes are distinguishable.
@@ -158,6 +194,11 @@ which is too small to carry it.
 ## Data Model and Migration
 Nothing persisted about agents; live state is in memory only. The pet owns one config file holding the
 watched-directory list. No schema is shared with any agent.
+
+The surface remembers its own position (story 002, re-keyed by story 005 around the creature) in the
+app's `UserDefaults`, deliberately not in the config file: window geometry is a macOS concern the core
+has no business in, and the config file is hand-edited, so an app writing to it could clobber what the
+user typed.
 
 **Location: `~/.config/agent-pet/config.json`**, honouring `XDG_CONFIG_HOME` when it is set. Every agent
 this tool observes keeps its own config in the home directory — `~/.claude`, `~/.codex`, a custom `CLAUDE_CONFIG_DIR` — and
@@ -180,7 +221,11 @@ never written anywhere, never logged, and never leave memory.
 - A configured directory that is absent or unreadable is skipped; discovery continues with the rest.
 - A registry file that is malformed or mid-write is skipped for that tick.
 - Discovery failing as a whole surfaces an error state, distinct from the empty state.
-- Sessions the pet cannot interpret (Codex, this release) are ignored silently.
+- A directory holding nothing an adapter understands is ignored by that adapter silently: a profile is
+  not an error because another agent owns it. (Codex sessions are rendered since story 003.)
+- An adapter that fails costs the tick only its own rows; the poll still reports ok with the others.
+- A `ps` listing that could not be taken is retried by the next ask rather than remembered as an empty
+  machine.
 
 ## Alternatives Considered
 Recorded in the story spec's Design Requirement and not re-opened: agent hook configuration, the
@@ -222,6 +267,12 @@ Verified during build (release 001):
   beyond stdout/stderr, and no write, create or remove call exists outside test modules.
 - Footprint: 39.6 MB resident, 0.32 s of CPU over 90 s (~0.36%).
 
+Amended after later stories and preflight run 1 (release 001): 162 Rust and 47 Swift tests, run by
+`./test.sh`. `SystemProcessTable` is built over a `CommandRunner` — one method per `ps` or `lsof`
+invocation — so a test decides what the machine printed, and the table's own promises (one listing per
+poll, dropped when the next begins; a process's environment read once while it runs) are tests that
+fail under mutation rather than documented intent.
+
 Confirmed by the developer in real use: the empty state (`No agents running` with every session
 stopped), and that a click on the pet stops there rather than reaching the window beneath.
 
@@ -234,9 +285,18 @@ own clicks. It still never takes keyboard focus: `.nonactivatingPanel` with `can
 mattered. Passing clicks through is also incompatible with dragging the pet, so the two findings
 pointed the same way.
 
+Story 005 refined this. The surface is a creature with a bubble above it and a transparent band
+between them, and clicks pass through that band — swallowing a click where the user can see the window
+beneath is the same trap in a new place — while anything drawn still catches its own. The panel toggles
+`ignoresMouseEvents` as the pointer moves; declining the point in `hitTest` was measured and does not
+do it.
+
 The count-up timer was re-stamping its observation time on every discovery tick, so it reset every two
-seconds instead of showing a status's real age. The timestamp is now pinned to when a status first
-appeared and restarts only when the state or the activity line changes.
+seconds instead of showing a status's real age. The timestamp was then pinned to when a status first
+appeared. Story 006 replaced first appearance with the agent's own record of when the status changed —
+`statusUpdatedAt`, the errored transcript entry's timestamp, a Codex turn boundary — so a session idle
+since before the pet launched says so; first appearance remains the fallback where the agent recorded
+nothing, and the pin now restarts only on a change of state, never of activity line.
 
 ## Open Questions
 None. Every question this document was opened to answer is settled above.
