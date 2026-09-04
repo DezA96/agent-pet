@@ -136,4 +136,4 @@ in `UserDefaults` and never writes to an agent's files.
 
 ## Known Failures
 
-None yet — this runbook has not been run.
+None encountered.
