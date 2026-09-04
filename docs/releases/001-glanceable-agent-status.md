@@ -97,13 +97,14 @@ Single-user local release: the developer runs it on their own machine, no rollou
   down the middle. C-006 is now rows only and is satisfied by story 001; C-005 delivers the pet and its
   attention states together.
 - **Added C-017 status age counts from the real status change** (spec round, story 002). Conscious
-  expansion. Claude Code writes `statusUpdatedAt` — a unix-ms timestamp of when a session's status last
-  actually changed — on every registry file, and `RegistryEntry` never parses it; the adapter stamps
-  `observed_at = now_ms()` instead. The age therefore measures when the *pet* looked, not when the
-  status began. Observed live while specifying story 002: a session idle for 96 minutes would display
-  as `0s` after a relaunch. Not a defect against story 001, whose criterion says "since that status was
-  observed" and is met — the criterion turned out weaker than the data already on disk. Expanded rather
-  than backlogged because a glanceable surface stating a false age is worse than stating none, and the
+  expansion. Claude Code writes `statusUpdatedAt` — a unix-ms timestamp of when a session's status
+  last actually changed — on every registry file, and `RegistryEntry` never parses it; the adapter
+  stamps `observed_at = now_ms()` instead (the code as it stood when this was raised; story 006
+  changed it). The age therefore measures when the *pet* looked, not when the status began. Observed
+  live while specifying story 002: a session idle for 96 minutes would display as `0s` after a
+  relaunch. Not a defect against story 001, whose criterion says "since that status was observed"
+  and is met — the criterion turned out weaker than the data already on disk. Expanded rather than
+  backlogged because a glanceable surface stating a false age is worse than stating none, and the
   release goal is a glance that can be trusted. Kept as its own story rather than folded into 002:
   it is an observation-core change with nothing to do with window placement.
 - **C-013 uncut and absorbed into C-005** (spec round, story 004). Conscious expansion. C-013 — the
@@ -119,7 +120,7 @@ Single-user local release: the developer runs it on their own machine, no rollou
   may be weaker for Codex" was half right, and the Claude half was wrong in the pet's favour. Reading
   the shipped CLI bundle rather than inferring from files on disk: Claude Code publishes
   `status: busy | idle | waiting | shell` with a `waitingFor` reason string, and marks transcript
-  errors as `isApiErrorMessage` with `apiErrorIsTransient` — so both attention states are readable
+  errors as `isApiErrorMessage` with `apiErrorStatus` — so both attention states are readable
   from channels the pet already reads, and story 001's exclusion "distinguishing blocked-awaiting-
   permission from plain idle" was never the hard problem it looked like. Codex remains open: it defines
   the approval and error events but has written none across 18 rollouts and 4 CLI versions between this
